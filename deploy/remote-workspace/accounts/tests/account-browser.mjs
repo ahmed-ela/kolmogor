@@ -17,6 +17,7 @@ const origin = 'http://127.0.0.1:' + port;
 const accounts = new Accounts(':memory:');
 const providers = { codex: 'disconnected', claude: 'disconnected', antigravity: 'disconnected', chrome: 'ready' };
 const starts = [];
+let codexAccountSwitches = 0;
 const firstChunk = Promise.withResolvers();
 const lastChunk = Promise.withResolvers();
 let sendCount = 0, push;
@@ -35,11 +36,19 @@ const server = accountServer({
   },
   broker: {
     async call(_workspace, action, provider, code) {
-      if (action === 'chat-models') return {models:[
+      if (action === 'chat-models' && provider === 'gemini') return {models:[{id:'gemini/gemini-fixture',name:'Gemini Fixture'}]};
+      if (action === 'chat-models') return {plan:'pro',models:[
         {id:'fixture-a', name:'Fixture A', isDefault:true}, {id:'fixture-b', name:'Fixture B', isDefault:false}
       ]};
       if (action === 'ensure') return { ready: true };
       if (action === 'status') return { ready: true, providers };
+      if (action === 'switch') {
+        assert.equal(provider, 'codex');
+        assert.equal(providers.codex, 'connected');
+        codexAccountSwitches++;
+        providers.codex = 'pending';
+        return { url: 'https://auth.openai.com/codex/device', message: 'Approve the account change.' };
+      }
       if (action === 'code') {
         assert.ok(['claude', 'antigravity'].includes(provider));
         assert.equal(code, 'fixture-' + provider);
@@ -58,7 +67,7 @@ const server = accountServer({
         message: 'Approve the synthetic connection.',
       };
     },
-    async chat(_owner,{thread,prompt,model}, onDelta) {
+    async chat(_owner,{thread,prompt,model,context}, onDelta) {
       const session = '10000000-0000-4000-8000-000000000003';
       if (prompt === 'A streamed fixture') {
         sendCount++;
@@ -70,6 +79,11 @@ const server = accountServer({
       }
       if (prompt === 'A long layout fixture')
         return { status:'completed', thread:session, model, reply:'A readable paragraph on a narrow screen. '.repeat(240) };
+      if (model==='gemini/gemini-fixture') {
+        assert.equal(thread,null);
+        assert.deepEqual(JSON.parse(context).turns.map(row=>row.reply),['Stored','I remember']);
+        return {status:'completed',model,thread:'20000000-0000-4000-8000-000000000003',reply:'Gemini remembers'};
+      }
       if (thread) assert.equal(thread,session);
       assert.equal(prompt,thread ? 'Recall it' : 'Remember the fixture');
       assert.equal(model,thread ? 'fixture-b' : 'fixture-a');
@@ -114,7 +128,7 @@ try {
   const chats = page.getByRole('button',{name:'Chats',exact:true});
   const connections = page.getByRole('button',{name:'Connections',exact:true});
   const newChat = page.getByRole('button',{name:'New chat'});
-  const input = page.getByLabel('Message Codex');
+  const input = page.getByLabel('Message',{exact:true});
   const back = page.getByRole('button',{name:'All chats'});
   const send = page.getByRole('button',{name:'Send',exact:true});
   await page.getByRole('heading',{name:'No chats yet'}).waitFor();
@@ -135,15 +149,15 @@ try {
   assert.equal(await input.evaluate(el=>el===document.activeElement),true);
   await back.click();
   await page.getByRole('button',{name:'New chat'}).click();
-  await page.getByLabel('Message Codex').fill('Remember the fixture');
+  await page.getByLabel('Message',{exact:true}).fill('Remember the fixture');
   await page.getByRole('button',{name:'Send',exact:true}).click();
   await page.getByText('Stored',{exact:true}).waitFor();
   const other = await browser.newPage();
   await other.goto(origin);
   await other.getByRole('link',{name:'Sign in with Google'}).click();
   await other.getByRole('button',{name:'Remember the fixture'}).click();
-  await other.getByRole('combobox',{name:'Codex model'}).selectOption('fixture-b');
-  await other.getByLabel('Message Codex').fill('Recall it');
+  await other.getByRole('combobox',{name:'Model'}).selectOption('fixture-b');
+  await other.getByLabel('Message',{exact:true}).fill('Recall it');
   await other.getByRole('button',{name:'Send',exact:true}).click();
   await other.getByText('I remember',{exact:true}).waitFor();
   await page.reload();
@@ -151,6 +165,14 @@ try {
   await page.getByText('Stored',{exact:true}).waitFor();
   await page.waitForFunction(() => document.querySelector('#chat-model').value === 'fixture-b');
   assert.deepEqual(await page.locator('.agent-message strong').allTextContents(),['fixture-a','fixture-b']);
+  const picker=page.getByRole('combobox',{name:'Model'});
+  assert.deepEqual(await picker.locator('optgroup').evaluateAll(gs=>gs.map(g=>g.label)),['Codex · Pro','Gemini']);
+  await picker.selectOption('gemini/gemini-fixture');
+  await input.fill('What does Gemini recall?');
+  await send.click();
+  await page.getByText('Gemini remembers',{exact:true}).waitFor();
+  await page.reload();
+  await page.waitForFunction(()=>document.querySelector('#chat-model')?.value==='gemini/gemini-fixture');
   await page.getByRole('button',{name:'All chats'}).click();
   await page.getByRole('button',{name:'Remember the fixture'}).waitFor();
   assert.equal(await page.locator('#chat-list button').count(),1);
@@ -180,7 +202,7 @@ try {
   for (const viewport of [{width:320,height:360},{width:740,height:290},{width:1024,height:720}]) {
     await page.setViewportSize(viewport);
     await fits(back);
-    await fits(page.getByLabel('Codex model'));
+    await fits(page.getByLabel('Model'));
     await fits(send);
     const transcript = page.locator('#conversation');
     await transcript.evaluate(el=>{ el.scrollTop=0; });
@@ -210,6 +232,13 @@ try {
   await page.getByRole('heading', { name: 'Workspace Chrome' }).waitFor();
   await page.locator('#screen canvas').waitFor({ state: 'attached' });
   assert.deepEqual(starts, ['codex', 'claude', 'antigravity', 'chrome']);
+  providers.codex = 'connected';
+  await page.locator('#close-view').click();
+  await page.getByRole('button', { name: 'Switch account' }).click();
+  await page.getByText('Approve the account change.', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('link', { name: 'Open sign-in page' }).getAttribute('href'),
+    'https://auth.openai.com/codex/device');
+  assert.equal(codexAccountSwitches, 1);
   await page.getByRole('button', { name: 'Sign out' }).click();
   await page.getByRole('link', { name: 'Sign in with Google' }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Connect all accounts' }).isVisible(), false);

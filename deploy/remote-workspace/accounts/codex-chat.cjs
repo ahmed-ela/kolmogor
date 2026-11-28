@@ -41,7 +41,7 @@ async function reply({ thread, prompt, model, operation }, start = launch, publi
     if (thread) options.threadId = thread;
     send({id:2, method:thread ? 'thread/resume' : 'thread/start', params:options});
   }
-  let resolvedModel, catalogResult, rerouted = false;
+  let resolvedModel, catalogResult, plan, rerouted = false;
   let session, turn, item, answer, bytes = 0, completed = false, failed = false;
   try {
     send({ id: 1, method: 'initialize', params: {clientInfo: {name:'kolmogor_workspace',version:'1'}} });
@@ -52,8 +52,13 @@ async function reply({ thread, prompt, model, operation }, start = launch, publi
         if (event.method || event.error) throw Error('Unexpected worker request or error');
         if (event.id === 1) {
           send({method:'initialized'});
-          if (listOnly || model) list(null);
+          if (listOnly) send({id:6,method:'account/read',params:{refreshToken:false}});
+          else if (model) list(null);
           else openThread();
+        } else if (event.id === 6) {
+          const tier = event.result?.account?.planType;
+          if (typeof tier === 'string' && /^[a-z_]{1,32}$/.test(tier)) plan = tier;
+          list(null);
         } else if (event.id === 4) {
           for (const row of event.result.data) {
             if (!row.hidden && typeof row.model === 'string' && modelID.test(row.model))
@@ -66,7 +71,7 @@ async function reply({ thread, prompt, model, operation }, start = launch, publi
             cursors.add(cursor);
             list(cursor);
           } else if (listOnly || !catalog.has(model)) {
-            catalogResult = listOnly ? {models:[...catalog.values()]} : {status:'model_unavailable'};
+            catalogResult = listOnly ? {models:[...catalog.values()], ...(plan && {plan})} : {status:'model_unavailable'};
             proc.stdin.end();
           } else openThread();
         } else if (event.id === 2) {

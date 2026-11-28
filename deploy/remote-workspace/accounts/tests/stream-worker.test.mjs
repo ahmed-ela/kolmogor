@@ -16,6 +16,7 @@ function fakeServer(thread, completed = true, {calls = [], resolved, reroute} = 
       const r = JSON.parse(chunk);
       calls.push(r);
       if (r.id === 1) emit({id:1, result:{}});
+      if (r.method === 'account/read') emit({id:r.id,result:{account:{type:'chatgpt',planType:'pro'}}});
       if (r.method === 'model/list') {
         assert.equal(r.params.includeHidden,false);
         emit({id:r.id, result:r.params.cursor

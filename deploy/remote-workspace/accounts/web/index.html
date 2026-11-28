@@ -29,7 +29,7 @@
           <header class="screen-heading">
             <button class="icon-button" id="all-chats" aria-label="All chats" hidden><svg aria-hidden="true"><use href="#i-back"/></svg></button>
             <h1 id="chat-heading" tabindex="-1">Chats</h1>
-            <select id="chat-model" aria-label="Codex model" hidden></select>
+            <select id="chat-model" aria-label="Model" hidden></select>
             <button type="button" id="retry-models" hidden>Reload models</button>
             <button class="icon-button compose" id="new-chat" aria-label="New chat" title="New chat"><svg aria-hidden="true"><use href="#i-compose"/></svg></button>
           </header>
@@ -55,8 +55,8 @@
           <p id="chat-status" role="status"></p>
           <form id="chat-form" hidden>
             <div class="composer">
-              <label class="sr-only" for="chat-input">Message Codex</label>
-              <textarea id="chat-input" placeholder="Message Codex" rows="1" required></textarea>
+              <label class="sr-only" for="chat-input">Message</label>
+              <textarea id="chat-input" placeholder="Message" rows="1" required></textarea>
               <button id="chat-send" aria-label="Send" title="Send"><svg aria-hidden="true"><use href="#i-send"/></svg></button>
             </div>
           </form>

@@ -1,4 +1,5 @@
 const $ = (id) => document.getElementById(id);
+const sourceName = model => model?.startsWith('gemini/') ? 'Gemini' : 'Codex';
 
 function icon(name, className) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -47,10 +48,19 @@ export function openChats(account) {
   const drafts = new Map();
   const choices = new Map();
   const picker = $('chat-model');
-  let catalog = [], loadingModels, catalogError = '', storedModel, historyReady = false;
+  let catalog = [], providers = {}, loadingModels, catalogError = '', storedModel, historyReady = false;
   function renderPicker() {
     const choice = choices.get(selected) || storedModel || catalog.find((m) => m.isDefault)?.id || catalog[0]?.id;
-    const options = catalog.map(({name,id}) => new Option(name, id));
+    const options = [];
+    for (const [key,label] of [['codex','Codex'],['gemini','Gemini']]) {
+      const models = catalog.filter(row => row.provider === key);
+      if (!models.length) continue;
+      const group = document.createElement('optgroup');
+      const tier = providers[key]?.plan;
+      group.label = tier ? label + ' · ' + tier[0].toUpperCase() + tier.slice(1) : label;
+      for (const {id,name} of models) group.append(new Option(name,id));
+      options.push(group);
+    }
     if (!options.length) options.push(new Option(catalogError || 'Loading models…', ''));
     else if (choice && !catalog.some((m) => m.id === choice))
       options.unshift(new Option(choice + ' (unavailable)', ''));
@@ -63,7 +73,9 @@ export function openChats(account) {
     catalogError = '';
     loadingModels = api('/models').then((result) => {
       catalog = result.models || [];
-      if (!catalog.length) catalogError = result.status === 'disconnected' ? 'Connect Codex in Connections' : 'No models available';
+      providers = result.providers || {};
+      if (!catalog.length) catalogError = 'Connect a provider in Connections';
+      else if (Object.values(providers).some(p => p.status === 'unavailable')) catalogError = 'Some models are unavailable';
     }).catch(() => {
       catalog = [];
       catalogError = 'Models unavailable';
@@ -228,7 +240,7 @@ export function openChats(account) {
         who = document.createElement('strong'),
         content = document.createElement('div');
       li.className = role === 'You' ? 'user-message' : 'agent-message';
-      if (role === 'Codex') who.append(icon('brand'));
+      if (role === 'Codex' || role === 'Gemini') who.append(icon('brand'));
       who.append(modelLabel || role);
       content.textContent = text;
       li.append(who, content);
@@ -239,12 +251,12 @@ export function openChats(account) {
       line('You', turn.prompt);
       if (turn.state === 'completed') {
         const label = turn.model && (turn.requestedModel && turn.requestedModel !== turn.model
-          ? turn.model + ' (requested ' + turn.requestedModel + ')' : turn.model);
-        line('Codex', turn.reply, label);
+          ? turn.model + ' (requested ' + turn.requestedModel + ')' : turn.model.replace(/^gemini\//,''));
+        line(sourceName(turn.model), turn.reply, label);
       }
       if (turn.state === 'working') {
         const text = streamRequest === turn.request ? preview : '';
-        const live = line('Codex', text);
+        const live = line(sourceName(turn.requestedModel), text);
         live.id = 'live-reply';
         live.hidden = !text;
       }
@@ -253,7 +265,7 @@ export function openChats(account) {
     working = turns.at(-1)?.state === 'working';
     $('messages').replaceChildren(...messages);
     $('older-turns').hidden = !next;
-    $('chat-status').textContent = working ? 'Codex is replying…' : '';
+    $('chat-status').textContent = working ? sourceName(turns.at(-1).requestedModel) + ' is replying…' : '';
     controls();
     if (older) scroller.scrollTop = scroller.scrollHeight - anchor;
     else if (jumpToEnd) scroller.scrollTop = scroller.scrollHeight;
@@ -348,7 +360,7 @@ export function openChats(account) {
       input.value = '';
       sizeInput();
       working = true;
-      $('chat-status').textContent = 'Codex is replying…';
+      $('chat-status').textContent = sourceName(storedModel) + ' is replying…';
     } catch (err) {
       if (err.status >= 400 && err.status < 500) retry = undefined;
       $('chat-status').textContent = err.message;
