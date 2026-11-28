@@ -18,37 +18,22 @@ export function desktopRows(sections: DesktopSection[], search: string): Row[] {
   });
 }
 
-export function DesktopChatList({snapshot, collapsed, search, post}: {
-  snapshot: AppSnapshot; collapsed: boolean; search: string; post: Action;
+type ListProps = { collapsed: boolean; search: string; post: Action };
+
+function ChatRows({sections, collapsed, search, post, select, selectedID, busyID, source = false, status}: ListProps & {
+  sections: DesktopSection[]; select: (id: string) => void; selectedID?: string;
+  busyID?: string | null; source?: boolean; status?: string;
 }) {
   const list = useRef<HTMLElement | null>(null);
-  const rows = useMemo(() => desktopRows(snapshot.desktopSections ?? [], search), [snapshot.desktopSections, search]);
-  const [failure, setFailure] = useState('');
-  const [copying, setCopying] = useState<string | null>(null);
-  const request = snapshot.codexImportRequest;
-  useLayoutEffect(() => { setFailure(''); setCopying(null); }, [request]);
-  async function select(id: string) {
-    if (!request) { post({action:'openDesktopChat', id}); return; }
-    if (copying) return;
-    setCopying(id); setFailure('');
-    try {
-      const bridge = window.webkit?.messageHandlers?.codexConversation;
-      if (!bridge) throw new Error('The import service is unavailable.');
-      await bridge.postMessage({action:'import',thread:id,selection:request});
-    } catch (e) { setFailure(e instanceof Error ? e.message : String(e)); }
-    finally { setCopying(null); }
-  }
+  const rows = useMemo(() => desktopRows(sections, search), [sections, search]);
   const searching = Boolean(search.trim());
   const { start, end } = useSidebarWindow(list, rows.length);
   useLayoutEffect(() => { if (list.current) list.current.scrollTop = 0; }, [search]);
-  return <nav ref={list} className={'task-list' + (collapsed ? ' agent-rail' : '')} aria-label="Codex desktop chats"
+  return <nav ref={list} className={'task-list' + (collapsed ? ' agent-rail' : '')} aria-label={source ? 'Available Codex chats' : 'Saved imported chats'}
     style={{ '--sidebar-row-height': sidebarRowHeight + 'px' }}>
-    <Button variant="ghost" title={request ? 'Back to imported chats' : 'Import from Codex'} onClick={() => post({action:request ? 'closeCodexImports' : 'browseCodexImports'})}>
-      {collapsed ? <Icon name="terminal" size={15} /> : request ? 'Back to imported chats' : 'Import from Codex…'}
-    </Button>
-    {failure && <p className="sidebar-empty" role="alert">{failure}</p>}
-    {snapshot.desktopSidebarError && <p className="sidebar-empty" role="status">{snapshot.desktopSidebarError}</p>}
-    {!snapshot.desktopSidebarError && !rows.length && <p className="sidebar-empty">{search ? 'No matching chats' : request ? 'Looking for Codex chats…' : 'No imported chats yet'}</p>}
+    {status && <p className="sidebar-empty" role="status">{status}</p>}
+    {!status && !sections.some(section => section.chats.length) ? <p className="sidebar-empty">{source ? 'No Codex chats available' : 'No imported chats yet'}</p>
+      : !status && !rows.length && <p className="sidebar-empty">No matching chats</p>}
     {start > 0 && <div aria-hidden="true" style={{height: start * sidebarRowHeight + 'px'}} />}
     {rows.slice(start, end).map(row => 'heading' in row
       ? <h2 key={'section:' + row.heading} className="sidebar-section-heading" data-desktop-section={row.heading} title={row.label}>
@@ -68,14 +53,56 @@ export function DesktopChatList({snapshot, collapsed, search, post}: {
           )}
         </h2>
       : <div key={row.id} className="workspace-tab-row" data-desktop-chat={row.id}>
-          <Button variant="ghost" className={'task-row' + (collapsed ? ' agent-rail-button' : '') + (snapshot.desktopReader?.id === row.id ? ' selected' : '')}
-            aria-label={request ? 'Import ' + row.title : row.title} title={row.title} disabled={!!copying} aria-current={snapshot.desktopReader?.id === row.id ? 'page' : undefined}
-            onClick={() => { void select(row.id); }}>
+          <Button variant="ghost" className={'task-row' + (collapsed ? ' agent-rail-button' : '') + (selectedID === row.id ? ' selected' : '')}
+            aria-label={source ? 'Import ' + row.title : row.title} title={row.title} disabled={!!busyID} aria-current={selectedID === row.id ? 'page' : undefined}
+            onClick={() => select(row.id)}>
             <AgentStatusIcon taskID={row.id} working={false} />
-            {!collapsed && <span className="task-row-title">{copying === row.id ? 'Importing…' : row.title}</span>}
+            {!collapsed && <span className="task-row-title">{busyID === row.id ? 'Importing…' : row.title}</span>}
           </Button></div>)}
     {end < rows.length && <div aria-hidden="true" style={{height:(rows.length-end)*sidebarRowHeight+'px'}} />}
   </nav>;
+}
+
+function ImportSources({snapshot, request, collapsed, post}: {
+  snapshot: AppSnapshot; request: string; collapsed: boolean; post: Action;
+}) {
+  const [search, setSearch] = useState('');
+  const [failure, setFailure] = useState('');
+  const [copying, setCopying] = useState<string | null>(null);
+  async function select(id: string) {
+    if (copying) return;
+    setCopying(id); setFailure('');
+    try {
+      const bridge = window.webkit?.messageHandlers?.codexConversation;
+      if (!bridge) throw new Error('The import service is unavailable.');
+      await bridge.postMessage({action:'import', thread:id, selection:request});
+    } catch (e) { setFailure(e instanceof Error ? e.message : String(e)); }
+    finally { setCopying(null); }
+  }
+  return <>
+    {!collapsed && <div className="sidebar-search-row"><div className="task-search">
+      <Icon name="search" size={15} />
+      <input type="search" aria-label="Search Codex chats" placeholder="Search Codex chats" value={search}
+        onInput={event => setSearch((event.currentTarget as HTMLInputElement).value)} />
+    </div></div>}
+    {failure && <p className="sidebar-empty" role="alert">{failure}</p>}
+    <ChatRows sections={snapshot.codexImportSections ?? []} status={snapshot.codexImportError ?? (snapshot.codexImportSections ? undefined : 'Looking for Codex chats…')}
+      search={search} collapsed={collapsed} post={post} source busyID={copying} select={select} />
+  </>;
+}
+
+export function DesktopChatList({snapshot, collapsed, search, post}: ListProps & { snapshot: AppSnapshot }) {
+  const request = snapshot.codexImportRequest;
+  const toggleLabel = request ? 'Close Codex picker' : 'Import from Codex';
+  return <>
+    <Button className="codex-import-toggle" variant="ghost" title={toggleLabel} aria-label={toggleLabel} aria-expanded={!!request}
+      onClick={() => post({action: request ? 'closeCodexImports' : 'browseCodexImports'})}>
+      {collapsed ? <Icon name="terminal" size={15} /> : request ? toggleLabel : 'Import from Codex…'}
+    </Button>
+    <ChatRows sections={snapshot.desktopSections ?? []} selectedID={snapshot.desktopReader?.id} status={snapshot.desktopSidebarError}
+      search={search} collapsed={collapsed} post={post} select={id => post({action:'openDesktopChat', id})} />
+    {request && <ImportSources key={request} snapshot={snapshot} request={request} collapsed={collapsed} post={post} />}
+  </>;
 }
 
 export function DesktopChatScope({selected, collapsed, choose}: {selected: boolean; collapsed: boolean; choose: (enabled:boolean)=>void}) {

@@ -606,6 +606,7 @@ pre { max-height: 240px; margin: 0; padding: 12px; overflow: auto; border: 1px s
 
 .sidebar.workspace-drop-target { box-shadow: inset 0 0 0 2px var(--ring, #737373); }
 
+.codex-import-toggle { flex: none; align-self: stretch; margin: 3px var(--sidebar-end-inset) 3px var(--sidebar-inset); }
 .desktop-chat-scope { display: flex; gap: 2px; margin: 4px var(--sidebar-end-inset) 4px var(--sidebar-inset); }
 .desktop-chat-scope button { flex: 1; min-width: 0; height: 25px; font-size: 12px; }
 .desktop-chat-scope button[aria-pressed=true] { background: var(--secondary); }

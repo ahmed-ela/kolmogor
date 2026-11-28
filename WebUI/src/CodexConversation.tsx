@@ -157,8 +157,8 @@ function Chat({reader, snapshot, onConnect}: {reader:DesktopReader} & WebsitePic
 
 export function DesktopConversation({reader,browsing,snapshot,onConnect}: {reader?:DesktopReader; browsing:boolean} & WebsitePickerProps) {
   return <>
-    <header className="desktop-reader-title"><strong>{browsing ? 'Import from Codex' : reader?.title ?? 'Imported chats'}</strong></header>
-    {browsing ? <div className="no-task-view"><p>Choose a Codex chat to copy into Kolmogor. Future replies stay in the app where you send them.</p></div>
-      : reader ? <Chat key={reader.request} reader={reader} snapshot={snapshot} onConnect={onConnect} /> : <div className="no-task-view"><p>Import a Codex chat to continue it here.</p></div>}
+    <header className="desktop-reader-title"><strong>{reader?.title ?? (browsing ? 'Import from Codex' : 'Imported chats')}</strong></header>
+    {reader ? <Chat key={reader.request} reader={reader} snapshot={snapshot} onConnect={onConnect} />
+      : <div className="no-task-view"><p>{browsing ? 'Choose a Codex chat to copy into Kolmogor.' : 'Import a Codex chat to continue it here.'}</p></div>}
   </>;
 }

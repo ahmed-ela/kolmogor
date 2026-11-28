@@ -203,6 +203,8 @@ export interface AppSnapshot {
   workspacePinnedCount?: number;
   desktopSections?: DesktopSection[];
   codexImportRequest?: string;
+  codexImportSections?: DesktopSection[];
+  codexImportError?: string;
   showsDesktopChats?: boolean;
   desktopSidebarError?: string;
   desktopReader?: DesktopReader;

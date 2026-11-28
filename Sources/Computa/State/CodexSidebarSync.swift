@@ -54,27 +54,24 @@ final class CodexSidebarSync {
     }
     func detach(_ window: WorkspaceTabs) {
         window.desktopReader = nil
+        disclosure[window.id] = nil
         closePicker(window)
     }
     private func closePicker(_ window: WorkspaceTabs) {
         queries[window.id] = nil
         catalogs[window.id] = nil
-        disclosure[window.id] = nil
         window.codexImportRequest = nil
         window.codexImportError = nil
     }
-    func sections(in window: WorkspaceTabs) -> [Client.Section] {
-        guard window.codexImportRequest != nil else {
-            return [
-                .init(
-                    id: "imports", name: "Imported chats", chats: library, isCollapsed: disclosure[window.id]?["imports"] ?? false
-                )
-            ]
-        }
-        return (catalogs[window.id]?.sections ?? []).map {
-            var section = $0
-            section.isCollapsed = disclosure[window.id]?[$0.id] ?? $0.isCollapsed
-            return section
+    func importedSection(in window: WorkspaceTabs) -> Client.Section {
+        .init(id: "imports", name: "Imported chats", chats: library, isCollapsed: disclosure[window.id]?["imports"] ?? false)
+    }
+
+    func sourceSections(in window: WorkspaceTabs) -> [Client.Section]? {
+        catalogs[window.id]?.sections.map { section in
+            let id = "codex:" + section.id
+            return .init(id: id, name: section.name, chats: section.chats,
+                         isCollapsed: disclosure[window.id]?[id] ?? section.isCollapsed)
         }
     }
     func setCollapsed(_ collapsed: Bool, sectionID: String, in window: WorkspaceTabs) {
@@ -82,7 +79,6 @@ final class CodexSidebarSync {
     }
     func open(_ id: String, in window: WorkspaceTabs) {
         guard !window.isClosed, window.showsDesktopChats, let row = library.first(where: { $0.id == id }) else { return }
-        closePicker(window)
         if window.desktopReader?.id != id { window.desktopReader = .init(request: UUID(), id: id, title: row.title) }
         window.importedChatID = id
     }
@@ -106,6 +102,7 @@ final class CodexSidebarSync {
             let catalog = catalogs[window.id], let owner = CodexDesktopLayout.ownerKey(for: catalog.account),
             let row = catalog.sections.lazy.flatMap(\.chats).first(where: { $0.id == id })
         else { throw Client.Failure.noChat }
+        let previousSelection = window.desktopReader?.request
         let client = makeClient()
         do {
             // A new connection rechecks both the signed-in account and current membership.
@@ -121,7 +118,7 @@ final class CodexSidebarSync {
             }
             guard queries[window.id] == request, !window.isClosed else { throw CancellationError() }
             try reload()
-            open(local, in: window)
+            if window.desktopReader?.request == previousSelection { open(local, in: window) }
             await client.close()
             return local
         } catch {
@@ -138,7 +135,7 @@ final class CodexSidebarSync {
             let token = (body["selection"] as? String).flatMap(UUID.init(uuidString:))
         else { throw Client.Failure.noChat }
         if action == "import" { return try await importChat(id, request: token, in: window) }
-        guard window.codexImportRequest == nil, let reader = window.desktopReader, reader.id == id, reader.request == token
+        guard let reader = window.desktopReader, reader.id == id, reader.request == token
         else { throw Client.Failure.noChat }
         let db = try store()
         if action == "page" {
@@ -178,7 +175,7 @@ final class CodexSidebarSync {
             guard let provider,
                 try await choices(provider).contains(where: { $0.id == model && $0.available != false && $0.selectable != false }
                 ),
-                window.desktopReader == reader, window.codexImportRequest == nil, window.showsDesktopChats, !window.isClosed
+                window.desktopReader == reader, window.showsDesktopChats, !window.isClosed
             else { throw Client.Failure.unavailableModel }
             try db.select(model, id: id, expected: current)
             return model
