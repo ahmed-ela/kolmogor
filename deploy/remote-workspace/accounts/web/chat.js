@@ -1,5 +1,15 @@
 const $ = (id) => document.getElementById(id);
 
+function icon(name, className) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('aria-hidden', 'true');
+  if (className) svg.setAttribute('class', className);
+  const use = document.createElementNS(svg.namespaceURI, 'use');
+  use.setAttribute('href', '#i-' + name);
+  svg.append(use);
+  return svg;
+}
+
 async function api(path, data) {
   const response = await fetch(
     '/api/chats' + path,
@@ -34,18 +44,37 @@ export function openChats(account) {
     busyRead = false,
     timer;
 
+  const drafts = new Map();
+  const input = $('chat-input');
+  const scroller = $('conversation');
+  let followReply = true;
+
+  function sizeInput() {
+    input.style.height = 'auto';
+    input.style.height = input.scrollHeight + 'px';
+  }
+
   function controls() {
     const visible = selected !== null;
     $('all-chats').hidden = !visible;
     $('chat-index').hidden = visible;
     $('conversation').hidden = !visible;
+    $('chat-form').hidden = !visible;
+    $('new-chat').hidden = visible;
+    $('draft-greeting').hidden = selected !== '';
+    $('workspace').toggleAttribute('data-thread', visible);
+    $('destinations').hidden = visible;
     $('chat-send').disabled = sending || working || !$('chat-input').value.trim();
-    $('chat-input').disabled = sending;
+    input.readOnly = sending;
     $('new-chat').disabled = sending || selected === '';
     $('all-chats').disabled = sending;
   }
 
-  function select(id) {
+  function select(id, moveFocus = false) {
+    if (selected !== null) {
+      if (input.value) drafts.set(selected, { value: input.value, retry });
+      else drafts.delete(selected);
+    }
     generation++;
     selected = id;
     if (id) localStorage.setItem(key, id);
@@ -56,9 +85,10 @@ export function openChats(account) {
     busyRead = false;
     sending = false;
     working = false;
-    retry = undefined;
+    retry = drafts.get(id)?.retry;
+    followReply = true;
     $('chat-heading').textContent = id === null ? 'Chats' : 'New chat';
-    $('chat-input').value = '';
+    input.value = drafts.get(id)?.value || '';
     $('chat-status').textContent = '';
     $('messages').replaceChildren();
     $('chat-list').replaceChildren();
@@ -66,10 +96,12 @@ export function openChats(account) {
     $('older-turns').hidden = true;
     $('chat-empty').hidden = true;
     controls();
+    if (id !== null) sizeInput();
     if (id === '') {
-      $('chat-input').focus();
+      input.focus();
       return;
     }
+    if (moveFocus) $('chat-heading').focus();
     void refresh();
   }
 
@@ -80,8 +112,13 @@ export function openChats(account) {
         const li = document.createElement('li'),
           button = document.createElement('button');
         button.type = 'button';
-        button.textContent = chat.title;
-        button.onclick = () => select(chat.id);
+        const glyph = document.createElement('span'), title = document.createElement('span');
+        glyph.className = 'chat-glyph';
+        glyph.append(icon('chats'));
+        title.className = 'row-title';
+        title.textContent = chat.title;
+        button.append(glyph, title, icon('next', 'chevron'));
+        button.onclick = () => select(chat.id, true);
         li.append(button);
         return li;
       });
@@ -90,7 +127,10 @@ export function openChats(account) {
     $('more-chats').hidden = !next;
   }
 
-  function renderTurns() {
+  function renderTurns(older) {
+    const anchor = scroller.scrollHeight - scroller.scrollTop;
+    const atEnd = anchor - scroller.clientHeight < 48;
+    const jumpToEnd = followReply || atEnd;
     const turns = [...rows.values()].sort((a, b) => a.seq - b.seq);
     const messages = [];
     const line = (role, text) => {
@@ -98,7 +138,8 @@ export function openChats(account) {
         who = document.createElement('strong'),
         content = document.createElement('div');
       li.className = role === 'You' ? 'user-message' : 'agent-message';
-      who.textContent = role;
+      if (role === 'Codex') who.append(icon('brand'));
+      who.append(role);
       content.textContent = text;
       li.append(who, content);
       messages.push(li);
@@ -113,6 +154,9 @@ export function openChats(account) {
     $('older-turns').hidden = !next;
     $('chat-status').textContent = working ? 'Codex is replying…' : '';
     controls();
+    if (older) scroller.scrollTop = scroller.scrollHeight - anchor;
+    else if (jumpToEnd) scroller.scrollTop = scroller.scrollHeight;
+    followReply = false;
   }
 
   async function refresh(older = false) {
@@ -146,7 +190,7 @@ export function openChats(account) {
       }
       if (selected) {
         $('chat-heading').textContent = page.title;
-        if (changed || working) renderTurns();
+        if (changed || followReply) renderTurns(older);
       } else {
         if (changed || !cache.size) renderList();
         $('chat-status').textContent = '';
@@ -163,10 +207,13 @@ export function openChats(account) {
     }
   }
 
-  $('new-chat').onclick = () => select('');
-  $('all-chats').onclick = () => select(null);
+  $('first-chat').onclick = $('new-chat').onclick = () => select('');
+  $('all-chats').onclick = () => select(null, true);
   $('more-chats').onclick = $('older-turns').onclick = () => refresh(true);
-  $('chat-input').oninput = controls;
+  input.oninput = () => {
+    sizeInput();
+    controls();
+  };
   $('chat-form').onsubmit = async (event) => {
     event.preventDefault();
     const prompt = $('chat-input').value;
@@ -180,11 +227,14 @@ export function openChats(account) {
     try {
       const result = await api(selected ? '/' + selected : '', retry);
       const same = selected === result.id;
+      drafts.delete(selected);
+      followReply = true;
       selected = result.id;
       localStorage.setItem(key, selected);
       if (!same) rows.clear();
       retry = undefined;
-      $('chat-input').value = '';
+      input.value = '';
+      sizeInput();
       working = true;
       $('chat-status').textContent = 'Codex is replying…';
     } catch (err) {

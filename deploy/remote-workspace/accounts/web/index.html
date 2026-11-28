@@ -2,62 +2,90 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Kolmogor account</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Kolmogor workspace</title>
     <link rel="stylesheet" href="/account.css" />
   </head>
   <body>
+    <svg class="icons" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+      <symbol id="i-chats" viewBox="0 0 24 24"><path d="M20.5 11.5a8 8 0 0 1-8.5 8 10 10 0 0 1-4-.85L3.5 20l1.25-4a7.5 7.5 0 0 1-1.25-4.5 8 8 0 0 1 8.5-8 8 8 0 0 1 8.5 8Z"/></symbol>
+      <symbol id="i-connect" viewBox="0 0 24 24"><path d="m10 14 4-4m-5 2-1.5 1.5a3.5 3.5 0 0 0 5 5l3-3a3.5 3.5 0 0 0 .5-4.3M15 12l1.5-1.5a3.5 3.5 0 0 0-5-5l-3 3a3.5 3.5 0 0 0-.5 4.3"/></symbol>
+      <symbol id="i-compose" viewBox="0 0 24 24"><path d="M12 5H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-6M10 14l.7-3L18 3.7a1.6 1.6 0 0 1 2.3 2.3L13 13.3Z"/></symbol>
+      <symbol id="i-back" viewBox="0 0 24 24"><path d="m14.5 5-7 7 7 7"/></symbol>
+      <symbol id="i-next" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+      <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol>
+      <symbol id="i-brand" viewBox="0 0 1024 1024"><g fill="currentColor" stroke="none"><path d="M512 208C537 319 573 355 684 380C573 405 537 441 512 552C487 441 451 405 340 380C451 355 487 319 512 208ZM684 474C702 554 728 580 808 598C728 616 702 642 684 722C666 642 640 616 560 598C640 580 666 554 684 474ZM348 548C362 611 383 632 446 646C383 660 362 681 348 744C334 681 313 660 250 646C313 632 334 611 348 548Z"/></g></symbol>
+    </svg>
     <main>
-      <header>
-        <h1>Workspace</h1>
-        <button id="logout" hidden>Sign out</button>
-      </header>
-      <p id="identity" role="status">Checking your session…</p>
-      <a class="primary" id="login" href="/auth/google" hidden>Sign in with Google</a>
-      <section id="workspace" hidden>
-        <section id="chats" aria-label="Workspace chats">
-          <header><h2 id="chat-heading">Chats</h2><div>
-            <button id="all-chats" hidden>All chats</button>
-            <button id="new-chat">New chat</button>
-          </div></header>
-          <div id="chat-index">
-            <p id="chat-empty" hidden>No workspace chats yet.</p>
+      <section id="entry">
+        <svg class="brand" aria-hidden="true"><use href="#i-brand"/></svg>
+        <h1>Your workspace</h1>
+        <p id="entry-status" role="status">Checking your session…</p>
+        <a class="primary" id="login" href="/auth/google" hidden>Sign in with Google</a>
+      </section>
+      <div id="workspace" hidden>
+        <section id="chats" aria-labelledby="chat-heading">
+          <header class="screen-heading">
+            <button class="icon-button" id="all-chats" aria-label="All chats" hidden><svg aria-hidden="true"><use href="#i-back"/></svg></button>
+            <h1 id="chat-heading" tabindex="-1">Chats</h1>
+            <button class="icon-button compose" id="new-chat" aria-label="New chat" title="New chat"><svg aria-hidden="true"><use href="#i-compose"/></svg></button>
+          </header>
+          <div id="chat-index" class="scroll-area">
+            <div id="chat-empty" class="empty" hidden>
+              <svg class="brand" aria-hidden="true"><use href="#i-chats"/></svg>
+              <h2>No chats yet</h2>
+              <button id="first-chat" class="primary">Start a chat</button>
+            </div>
             <ul id="chat-list"></ul>
-            <button id="more-chats" hidden>More chats</button>
+            <button class="text-button" id="more-chats" hidden>More chats</button>
           </div>
-          <div id="conversation" hidden>
-            <button id="older-turns" hidden>Earlier messages</button>
-            <ol id="messages" aria-label="Conversation"></ol>
-            <form id="chat-form">
-              <label for="chat-input">Message Codex</label>
-              <textarea id="chat-input" rows="3" required></textarea>
-              <button class="primary" id="chat-send">Send</button>
-            </form>
+          <div id="conversation" class="scroll-area" hidden>
+            <div class="reading-column">
+              <button class="text-button" id="older-turns" hidden>Earlier messages</button>
+              <div id="draft-greeting" class="empty" hidden>
+                <svg class="brand" aria-hidden="true"><use href="#i-brand"/></svg>
+                <h2>Kolmogor will take care of it.</h2>
+              </div>
+              <ol id="messages" aria-label="Conversation"></ol>
+            </div>
           </div>
           <p id="chat-status" role="status"></p>
-        </section>
-        <h2>Connections</h2>
-        <button id="connect" class="primary">Connect all accounts</button>
-        <p id="status" role="status"></p>
-        <ul id="providers"></ul>
-        <section id="instructions" hidden>
-          <h2></h2>
-          <p></p>
-          <a id="authorize" target="_blank" rel="noopener noreferrer" hidden>Open sign-in page</a>
-          <form hidden>
-            <label>Authorization code<input type="password" autocomplete="off" required /></label
-            ><button>Submit code</button>
+          <form id="chat-form" hidden>
+            <div class="composer">
+              <label class="sr-only" for="chat-input">Message Codex</label>
+              <textarea id="chat-input" placeholder="Message Codex" rows="1" required></textarea>
+              <button id="chat-send" aria-label="Send" title="Send"><svg aria-hidden="true"><use href="#i-send"/></svg></button>
+            </div>
           </form>
-          <button id="skip" hidden>Skip this account</button>
         </section>
-        <section id="viewer" hidden>
-          <header>
-            <h2>Workspace Chrome</h2>
-            <button id="close-view">Close display</button>
-          </header>
-          <div id="screen"></div>
+        <section id="connections" class="scroll-area" aria-labelledby="connections-title" hidden>
+          <header class="screen-heading"><h1 id="connections-title" tabindex="-1">Connections</h1></header>
+          <div class="settings-content">
+            <button id="connect" class="primary">Connect all accounts</button>
+            <p id="status" role="status"></p>
+            <p id="provider-health" role="status">Checking connections…</p>
+            <ul id="providers" aria-label="Providers"></ul>
+            <section id="instructions" hidden>
+              <h2></h2><p></p>
+              <a id="authorize" target="_blank" rel="noopener noreferrer" hidden>Open sign-in page</a>
+              <form hidden><label>Authorization code<input type="password" autocomplete="off" required /></label>
+                <button>Submit code</button>
+              </form>
+              <button class="text-button" id="skip" hidden>Skip this account</button>
+            </section>
+            <section id="viewer" hidden>
+              <header><h2>Workspace Chrome</h2><button id="close-view">Close display</button></header>
+              <div id="screen"></div>
+            </section>
+            <div class="account-row"><div><h2>Account</h2><p id="identity"></p></div><button id="logout">Sign out</button></div>
+          </div>
         </section>
-      </section>
+        <nav id="destinations" aria-label="Workspace">
+          <button id="nav-chats" aria-current="page"><svg aria-hidden="true"><use href="#i-chats"/></svg>Chats</button>
+          <button id="nav-connections"><svg aria-hidden="true"><use href="#i-connect"/></svg>Connections</button>
+        </nav>
+      </div>
     </main>
     <script type="module" src="/account.js"></script>
   </body>

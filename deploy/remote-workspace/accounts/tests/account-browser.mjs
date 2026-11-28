@@ -53,6 +53,8 @@ const server = accountServer({
     },
     async chat(_owner,{thread,prompt}) {
       const session = '10000000-0000-4000-8000-000000000003';
+      if (prompt === 'A long layout fixture')
+        return { status:'completed', thread:session, reply:'A readable paragraph on a narrow screen. '.repeat(240) };
       if (thread) assert.equal(thread,session);
       assert.equal(prompt,thread ? 'Recall it' : 'Remember the fixture');
       return {status:'completed',thread:session,reply:thread ? 'I remember' : 'Stored'};
@@ -77,14 +79,45 @@ try {
       process.env.CHROME_BIN || (process.platform === 'darwin' ? macChrome : '/usr/bin/google-chrome'),
     headless: true,
   });
-  const page = await browser.newPage();
+  const page = await browser.newPage({ viewport: { width:390, height:720 }, isMobile:true, hasTouch:true });
+  async function fits(target) {
+    const bounds = await target.boundingBox();
+    assert.ok(bounds && bounds.width >= 44 && bounds.height >= 44, '44px touch target');
+    const view = await page.evaluate(() => ({ w:document.documentElement.clientWidth,
+      h:window.visualViewport.height, scroll:document.documentElement.scrollWidth }));
+    assert.ok(view.scroll <= view.w, 'No horizontal page scrolling');
+    assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= view.w + 1 &&
+      bounds.y >= -1 && bounds.y + bounds.height <= view.h + 1, JSON.stringify({target:await target.getAttribute('id'),bounds,view}));
+  }
   await page.route('**/*', async (route) => {
     if (new URL(route.request().url()).origin === origin) await route.continue();
     else await route.abort();
   });
   await page.goto(origin);
   await page.getByRole('link', { name: 'Sign in with Google' }).click();
-  await page.getByText('owner@example.invalid', { exact: true }).waitFor();
+  const chats = page.getByRole('button',{name:'Chats',exact:true});
+  const connections = page.getByRole('button',{name:'Connections',exact:true});
+  const newChat = page.getByRole('button',{name:'New chat'});
+  const input = page.getByLabel('Message Codex');
+  const back = page.getByRole('button',{name:'All chats'});
+  const send = page.getByRole('button',{name:'Send',exact:true});
+  await page.getByRole('heading',{name:'No chats yet'}).waitFor();
+  for (const width of [320,390,1024]) {
+    await page.setViewportSize({width,height:700});
+    for (const target of [newChat, chats, connections]) await fits(target);
+  }
+  await page.setViewportSize({width:390,height:720});
+  await newChat.click();
+  await input.fill('Unsent draft');
+  await back.click();
+  await connections.click();
+  await page.getByText('owner@example.invalid', { exact:true }).waitFor();
+  assert.equal(await connections.getAttribute('aria-current'),'page');
+  await chats.click();
+  await newChat.click();
+  assert.equal(await input.inputValue(),'Unsent draft');
+  assert.equal(await input.evaluate(el=>el===document.activeElement),true);
+  await back.click();
   await page.getByRole('button',{name:'New chat'}).click();
   await page.getByLabel('Message Codex').fill('Remember the fixture');
   await page.getByRole('button',{name:'Send',exact:true}).click();
@@ -104,6 +137,26 @@ try {
   assert.equal(await page.locator('#chat-list button').count(),1);
   await other.close();
   console.log('Verified fresh workspace, two independent signed-in clients, both turns on one chat and reload.');
+  await newChat.click();
+  await input.fill('A long layout fixture');
+  await send.click();
+  await page.locator('.agent-message').waitFor();
+  await page.emulateMedia({colorScheme:'dark'});
+  for (const viewport of [{width:320,height:360},{width:740,height:290},{width:1024,height:720}]) {
+    await page.setViewportSize(viewport);
+    await fits(back);
+    await fits(send);
+    const transcript = page.locator('#conversation');
+    await transcript.evaluate(el=>{ el.scrollTop=0; });
+    assert.ok(await transcript.evaluate(el=>el.scrollHeight>el.clientHeight));
+    await fits(send);
+    assert.equal(await connections.isVisible(),false);
+  }
+  await page.setViewportSize({width:390,height:720});
+  await page.emulateMedia({colorScheme:'light'});
+  await back.click();
+  await connections.click();
+  console.log('Verified phone, landscape and desktop layouts, persistent composer, navigation and draft.');
   await page.getByRole('button', { name: 'Connect all accounts' }).click();
   await page.getByRole('heading', { name: 'Codex CLI' }).waitFor();
   assert.equal(
