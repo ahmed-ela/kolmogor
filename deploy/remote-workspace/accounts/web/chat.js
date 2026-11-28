@@ -45,6 +45,40 @@ export function openChats(account) {
     timer;
 
   const drafts = new Map();
+  const choices = new Map();
+  const picker = $('chat-model');
+  let catalog = [], loadingModels, catalogError = '', storedModel, historyReady = false;
+  function renderPicker() {
+    const choice = choices.get(selected) || storedModel || catalog.find((m) => m.isDefault)?.id || catalog[0]?.id;
+    const options = catalog.map(({name,id}) => new Option(name, id));
+    if (!options.length) options.push(new Option(catalogError || 'Loading models…', ''));
+    else if (choice && !catalog.some((m) => m.id === choice))
+      options.unshift(new Option(choice + ' (unavailable)', ''));
+    picker.replaceChildren(...options);
+    picker.value = catalog.some((m) => m.id === choice) ? choice : '';
+    controls();
+  }
+  async function loadModels() {
+    if (loadingModels) return loadingModels;
+    catalogError = '';
+    loadingModels = api('/models').then((result) => {
+      catalog = result.models || [];
+      if (!catalog.length) catalogError = result.status === 'disconnected' ? 'Connect Codex in Connections' : 'No models available';
+    }).catch(() => {
+      catalog = [];
+      catalogError = 'Models unavailable';
+    }).finally(() => {
+      loadingModels = undefined;
+      renderPicker();
+    });
+    renderPicker();
+    return loadingModels;
+  }
+  picker.onchange = () => {
+    choices.set(selected, picker.value);
+    controls();
+  };
+  $('retry-models').onclick = loadModels;
   const input = $('chat-input');
   const scroller = $('conversation');
   let followReply = true;
@@ -113,7 +147,10 @@ export function openChats(account) {
     $('draft-greeting').hidden = selected !== '';
     $('workspace').toggleAttribute('data-thread', visible);
     $('destinations').hidden = visible;
-    $('chat-send').disabled = sending || working || !$('chat-input').value.trim();
+    picker.hidden = !visible;
+    picker.disabled = !historyReady || !catalog.length || sending || working || Boolean(retry && retry.prompt === input.value);
+    $('retry-models').hidden = !visible || !catalogError;
+    $('chat-send').disabled = sending || working || !historyReady || !picker.value || !$('chat-input').value.trim();
     input.readOnly = sending;
     $('new-chat').disabled = sending || selected === '';
     $('all-chats').disabled = sending;
@@ -127,6 +164,8 @@ export function openChats(account) {
     generation++;
     closeStream();
     selected = id;
+    storedModel = undefined;
+    historyReady = id === '';
     if (id) localStorage.setItem(key, id);
     else localStorage.removeItem(key);
     next = null;
@@ -145,7 +184,8 @@ export function openChats(account) {
     $('more-chats').hidden = true;
     $('older-turns').hidden = true;
     $('chat-empty').hidden = true;
-    controls();
+    renderPicker();
+    if (id !== null) void loadModels();
     if (id !== null) sizeInput();
     if (id === '') {
       input.focus();
@@ -183,13 +223,13 @@ export function openChats(account) {
     const jumpToEnd = followReply || atEnd;
     const turns = [...rows.values()].sort((a, b) => a.seq - b.seq);
     const messages = [];
-    const line = (role, text) => {
+    const line = (role, text, modelLabel) => {
       const li = document.createElement('li'),
         who = document.createElement('strong'),
         content = document.createElement('div');
       li.className = role === 'You' ? 'user-message' : 'agent-message';
       if (role === 'Codex') who.append(icon('brand'));
-      who.append(role);
+      who.append(modelLabel || role);
       content.textContent = text;
       li.append(who, content);
       messages.push(li);
@@ -197,7 +237,11 @@ export function openChats(account) {
     };
     for (const turn of turns) {
       line('You', turn.prompt);
-      if (turn.state === 'completed') line('Codex', turn.reply);
+      if (turn.state === 'completed') {
+        const label = turn.model && (turn.requestedModel && turn.requestedModel !== turn.model
+          ? turn.model + ' (requested ' + turn.requestedModel + ')' : turn.model);
+        line('Codex', turn.reply, label);
+      }
       if (turn.state === 'working') {
         const text = streamRequest === turn.request ? preview : '';
         const live = line('Codex', text);
@@ -246,6 +290,13 @@ export function openChats(account) {
         cache.set(id, row);
       }
       if (selected) {
+        const latestTurn = incoming.at(-1);
+        const currentModel = !older && latestTurn?.state === 'working' ? latestTurn.requestedModel || page.model : page.model;
+        if (!historyReady || (!older && storedModel !== currentModel)) {
+          storedModel = currentModel;
+          historyReady = true;
+          renderPicker();
+        }
         $('chat-heading').textContent = page.title;
         if (changed || followReply) renderTurns(older);
         const latest = working && [...rows.values()].find((row) => row.state === 'working');
@@ -276,8 +327,8 @@ export function openChats(account) {
   $('chat-form').onsubmit = async (event) => {
     event.preventDefault();
     const prompt = $('chat-input').value;
-    if (working || sending || !prompt.trim()) return;
-    if (!retry || retry.prompt !== prompt) retry = { prompt, request: crypto.randomUUID() };
+    if ($('chat-send').disabled) return;
+    if (!retry || retry.prompt !== prompt) retry = { prompt, model: picker.value, request: crypto.randomUUID() };
     generation++;
     busyRead = false;
     sending = true;
@@ -287,6 +338,8 @@ export function openChats(account) {
       const result = await api(selected ? '/' + selected : '', retry);
       const same = selected === result.id;
       drafts.delete(selected);
+      choices.delete(selected);
+      storedModel = retry.model;
       followReply = true;
       selected = result.id;
       localStorage.setItem(key, selected);
@@ -297,6 +350,7 @@ export function openChats(account) {
       working = true;
       $('chat-status').textContent = 'Codex is replying…';
     } catch (err) {
+      if (err.status >= 400 && err.status < 500) retry = undefined;
       $('chat-status').textContent = err.message;
       return;
     } finally {

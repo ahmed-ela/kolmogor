@@ -20,7 +20,7 @@ export function workspaceBroker(path) {
       socket.write(JSON.stringify({ workspace, action, provider, code, turn }) + '\n')
     );
     return new Promise((resolve, reject) => {
-      const maxBytes = action === 'chat' ? 640 * 1024 : 8192;
+      const maxBytes = action === 'chat' ? 640 * 1024 : action === 'chat-models' ? 256 * 1024 : 8192;
       let response = Buffer.alloc(0);
       const fail = () => {
         finish();

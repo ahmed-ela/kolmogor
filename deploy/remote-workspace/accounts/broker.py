@@ -216,8 +216,11 @@ THREAD_ID = re.compile(r"[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}")
 
 
 def chat_reply(ns, turn, on_delta):
-    if not isinstance(turn, dict) or set(turn) != {"thread", "prompt"}:
+    if not isinstance(turn, dict) or set(turn) not in ({"thread", "prompt"}, {"thread", "prompt", "model"}):
         raise ValueError("Invalid chat turn.")
+    if "model" in turn and (not isinstance(turn["model"], str) or
+                            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}", turn["model"])):
+        raise ValueError("Invalid chat model.")
     thread, prompt = turn["thread"], turn["prompt"]
     if thread is not None and (not isinstance(thread, str) or not THREAD_ID.fullmatch(thread)):
         raise ValueError("Invalid chat thread.")
@@ -259,10 +262,16 @@ def chat_reply(ns, turn, on_delta):
 def dispatch(ns, action, provider=None, code=None, turn=None, on_delta=lambda _text: None):
     if not isinstance(ns, str) or not NAMESPACE.fullmatch(ns):
         raise ValueError("Invalid workspace.")
-    if action not in ("ensure", "status", "start", "code", "display", "chat") or (
+    if action not in ("ensure", "status", "start", "code", "display", "chat", "chat-models") or (
             action in ("start", "code") and provider not in (*DEPLOYMENTS, "chrome")):
         raise ValueError("Unknown workspace operation.")
     ready = allocation(ns, ensure=action == "ensure")
+    if action == "chat-models":
+        if not ready or not provider_state(ns, "codex"):
+            return {"models": [], "status": "disconnected" if ready else "capacity"}
+        process = run(container(ns, "codex", "node", "-e", CHAT_WORKER, interactive=True),
+                      data=json.dumps({"operation": "models"}))
+        return json.loads(process.stdout)
     if action == "chat":
         return chat_reply(ns, turn, on_delta) if ready else {"status": "capacity"}
     if action == "ensure" or not ready:

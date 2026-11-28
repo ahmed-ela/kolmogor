@@ -195,6 +195,7 @@ test('private chat HTTP routes enforce the owner and origin before dispatching',
   const message=JSON.stringify({request:'10000000-0000-4000-8000-000000000002',prompt:'hello',owner:'bob',thread:'untrusted'});
   const send=(path,cookie,site)=>request(path,{method:'POST',headers:{origin:site,cookie,'content-type':'application/json'},data:message});
   assert.equal((await request('/api/chats')).status,401);
+  assert.equal((await request('/api/chats/models')).status,401);
   assert.equal((await send('/api/chats',alice,'https://elsewhere.invalid')).status,403);
   assert.equal(calls.length,0);
   const created=await send('/api/chats',alice,origin);
