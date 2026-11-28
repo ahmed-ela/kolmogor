@@ -1,3 +1,5 @@
+import { openChats } from './chat.js';
+
 const $ = (selector) => document.querySelector(selector);
 const names = { codex: 'Codex CLI', claude: 'Claude Code', antigravity: 'Antigravity CLI', chrome: 'Chrome' };
 let active,
@@ -181,6 +183,7 @@ try {
   $('#workspace').hidden = !me.email;
   $('#logout').hidden = !me.email;
   if (me.email) {
+    openChats(me.email);
     $('#status').textContent = 'Preparing your private workspace…';
     await api('/api/workspace', 'POST');
     await refresh();

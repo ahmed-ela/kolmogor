@@ -86,3 +86,17 @@ input {
 [hidden] {
   display: none !important;
 }
+#chats { margin: 24px 0 32px; padding-bottom: 18px; border-bottom: 1px solid color-mix(in srgb, CanvasText 15%, transparent); }
+#chats header { align-items: flex-start; }
+#chat-heading { margin: 0; overflow-wrap: anywhere; }
+#chats header > div { display: flex; flex-shrink: 0; gap: 6px; }
+#chat-list li { border: 0; padding: 2px 0; }
+#chat-list button { text-align: left; width: 100%; padding: 10px 4px; border: 0; border-bottom: 1px solid color-mix(in srgb, CanvasText 12%, transparent); border-radius: 0; overflow-wrap: anywhere; }
+#messages { padding: 0; margin: 16px 0; }
+#messages li { display: block; border: 0; padding: 9px 0; }
+#messages strong, #chat-form label { font-size: 13px; color: GrayText; }
+#messages li div { white-space: pre-wrap; overflow-wrap: anywhere; }
+#chat-form { display: grid; gap: 6px; }
+#chat-input { box-sizing: border-box; padding: 10px; font: inherit; font-size: 16px; background: Canvas; color: CanvasText; border: 1px solid GrayText; border-radius: 8px; resize: vertical; }
+#chat-send { justify-self: end; }
+#chat-status:empty { display: none; }

@@ -211,13 +211,37 @@ class Login:
             self.written = True
 
 
-def dispatch(ns, action, provider=None, code=None):
+CHAT_WORKER = (ROOT / "codex-chat.cjs").read_text()
+THREAD_ID = re.compile(r"[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}")
+
+
+def chat_reply(ns, turn):
+    if not isinstance(turn, dict) or set(turn) != {"thread", "prompt"}:
+        raise ValueError("Invalid chat turn.")
+    thread, prompt = turn["thread"], turn["prompt"]
+    if thread is not None and (not isinstance(thread, str) or not THREAD_ID.fullmatch(thread)):
+        raise ValueError("Invalid chat thread.")
+    if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode()) > 8192:
+        raise ValueError("Invalid chat message.")
+    if not provider_state(ns, "codex"):
+        return {"status": "disconnected"}
+    # User input is stdin data. Neither the executable nor its arguments come from the HTTP client.
+    proc = run(container(ns, "codex", "node", "-e", CHAT_WORKER, interactive=True),
+               data=json.dumps(turn), check=False, timeout=125)
+    if proc.returncode or len(proc.stdout.encode()) > 640 * 1024:
+        return {"status": "interrupted"}
+    return json.loads(proc.stdout)
+
+
+def dispatch(ns, action, provider=None, code=None, turn=None):
     if not isinstance(ns, str) or not NAMESPACE.fullmatch(ns):
         raise ValueError("Invalid workspace.")
-    if action not in ("ensure", "status", "start", "code", "display") or (
+    if action not in ("ensure", "status", "start", "code", "display", "chat") or (
             action in ("start", "code") and provider not in (*DEPLOYMENTS, "chrome")):
         raise ValueError("Unknown workspace operation.")
     ready = allocation(ns, ensure=action == "ensure")
+    if action == "chat":
+        return chat_reply(ns, turn) if ready else {"status": "capacity"}
     if action == "ensure" or not ready:
         return {"ready": ready}
     if action == "display":
@@ -275,17 +299,19 @@ class Handler(socketserver.StreamRequestHandler):
     def handle(self):
         self.request.settimeout(12)
         try:
-            line = self.rfile.readline(4097)
-            if len(line) > 4096 or not line.endswith(b"\n"):
+            line = self.rfile.readline(65537)
+            if len(line) > 65536 or not line.endswith(b"\n"):
                 return
             msg = json.loads(line)
-            result = dispatch(msg.get("workspace"), msg.get("action"), msg.get("provider"), msg.get("code"))
+            if msg.get("action") != "chat" and len(line) > 4096:
+                return
+            result = dispatch(msg.get("workspace"), msg.get("action"), msg.get("provider"), msg.get("code"), msg.get("turn"))
             if msg.get("action") == "display" and result is None:
                 self.wfile.write(b'{"display":true}\n')
                 subprocess.run(container(msg["workspace"], "chrome", "node", "-e", RFB, interactive=True),
                                stdin=self.request, stdout=self.request, stderr=subprocess.DEVNULL, timeout=900)
                 return
-            self.wfile.write(json.dumps(result).encode() + b"\n")
+            self.wfile.write(json.dumps(result, ensure_ascii=False).encode() + b"\n")
         except ValueError as exc:
             # Only known, user-safe messages may cross this boundary.
             message = str(exc) if type(exc) is ValueError and str(exc) in SAFE_ERRORS else "Invalid workspace request."

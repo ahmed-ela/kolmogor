@@ -14,12 +14,13 @@ export class WorkspaceError extends Error {
 }
 
 export function workspaceBroker(path) {
-  function request(workspace, action, provider, code) {
+  function request(workspace, action, provider, code, turn) {
     const socket = connect(path);
     socket.on('connect', () =>
-      socket.write(JSON.stringify({ workspace, action, provider, code }) + '\n')
+      socket.write(JSON.stringify({ workspace, action, provider, code, turn }) + '\n')
     );
     return new Promise((resolve, reject) => {
+      const maxBytes = action === 'chat' ? 640 * 1024 : 8192;
       let response = Buffer.alloc(0);
       const fail = () => {
         finish();
@@ -36,10 +37,10 @@ export function workspaceBroker(path) {
       function read(chunk) {
         response = Buffer.concat([response, chunk]);
         const newline = response.indexOf(10);
-        if (newline < 0 && response.length <= 8192) return;
+        if (newline < 0 && response.length <= maxBytes) return;
         finish();
         try {
-          if (newline < 0 || newline > 8192) throw Error('Invalid broker response');
+          if (newline < 0 || newline > maxBytes) throw Error('Invalid broker response');
           const data = JSON.parse(response.subarray(0, newline).toString());
           if (publicErrors.has(data.error)) throw new WorkspaceError(data.error);
           if (data.error) throw Error('Workspace operation failed');
@@ -62,5 +63,5 @@ export function workspaceBroker(path) {
       socket.on('data', read);
     });
   }
-  return { call: request, display: (workspace) => request(workspace, 'display') };
+  return { call: request, chat: (workspace, turn) => request(workspace, 'chat', undefined, undefined, turn), display: (workspace) => request(workspace, 'display') };
 }

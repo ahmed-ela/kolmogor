@@ -29,6 +29,20 @@ class BrokerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 broker.dispatch(b, "display")
 
+    def test_chat_runs_only_in_the_owned_pod_with_structured_stdin(self):
+        ns = "kolmogor-ws-u-" + "b" * 40
+        with patch.object(broker, "allocation", return_value=True), patch.object(broker, "provider_state", return_value=True), patch.object(broker, "run") as run:
+            message = {"thread": None, "prompt": "A literal chat message"}
+            for invalid in ({"thread": "--last", "prompt": "hi"}, dict(message, command="arbitrary"), {"prompt": "hi"}, {"thread": None, "prompt": "x" * 8193}):
+                with self.assertRaises(ValueError):
+                    broker.dispatch(ns, "chat", turn=invalid)
+            run.assert_not_called()
+            run.return_value.returncode = 0
+            run.return_value.stdout = '{"status":"interrupted"}'
+            self.assertEqual(broker.dispatch(ns, "chat", turn=message), {"status": "interrupted"})
+            self.assertEqual(run.call_args.args[0], broker.container(ns, "codex", "node", "-e", broker.CHAT_WORKER, interactive=True))
+            self.assertEqual(broker.json.loads(run.call_args.kwargs["data"]), message)
+
     def test_previous_workspace_is_upgraded_in_place(self):
         ns = "kolmogor-ws-u-" + "1" * 40
         with tempfile.TemporaryDirectory() as root, patch.object(broker, "STATE", Path(root)), \

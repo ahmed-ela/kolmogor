@@ -30,6 +30,10 @@ async function fixture(t) {
         calls.push(args);
         return { ready: true };
       },
+      async chat(owner, turn) {
+        calls.push([owner, 'chat', turn]);
+        return {status:'completed', thread:turn.thread || '10000000-0000-4000-8000-000000000001', reply:'hello'};
+      },
       display() {
         return new Duplex({
           read() {},
@@ -182,4 +186,23 @@ test('repeated new sign-ins from one client yield a bounded retry, while another
     (await request('/auth/google', { headers: { 'cf-connecting-ip': '192.0.2.2' } })).status,
     303
   );
+});
+
+test('private chat HTTP routes enforce the owner and origin before dispatching', async t => {
+  const {request,sign,session,calls}=await fixture(t);
+  const alice=session(await sign('alice')),bob=session(await sign('bob'));
+  const message=JSON.stringify({request:'10000000-0000-4000-8000-000000000002',prompt:'hello',owner:'bob',thread:'untrusted'});
+  const send=(path,cookie,site)=>request(path,{method:'POST',headers:{origin:site,cookie,'content-type':'application/json'},data:message});
+  assert.equal((await request('/api/chats')).status,401);
+  assert.equal((await send('/api/chats',alice,'https://elsewhere.invalid')).status,403);
+  assert.equal(calls.length,0);
+  const created=await send('/api/chats',alice,origin);
+  assert.equal(created.status,202);
+  const path='/api/chats/'+JSON.parse(created.body).id;
+  assert.equal(calls[0][0],workspaceFor('alice'));assert.equal(calls[0][2].thread,null);
+  assert.equal((await request(path,{headers:{cookie:bob}})).status,404);
+  assert.equal((await send(path,bob,origin)).status,404);
+  assert.equal((await request(path,{headers:{cookie:alice}})).status,200);
+  assert.equal(JSON.parse((await request('/api/chats',{headers:{cookie:bob}})).body).chats.length,0);
+  assert.equal(calls.length,1);
 });

@@ -51,6 +51,12 @@ const server = accountServer({
         message: 'Approve the synthetic connection.',
       };
     },
+    async chat(_owner,{thread,prompt}) {
+      const session = '10000000-0000-4000-8000-000000000003';
+      if (thread) assert.equal(thread,session);
+      assert.equal(prompt,thread ? 'Recall it' : 'Remember the fixture');
+      return {status:'completed',thread:session,reply:thread ? 'I remember' : 'Stored'};
+    },
     async display() {
       return new Duplex({
         read() {},
@@ -79,6 +85,25 @@ try {
   await page.goto(origin);
   await page.getByRole('link', { name: 'Sign in with Google' }).click();
   await page.getByText('owner@example.invalid', { exact: true }).waitFor();
+  await page.getByRole('button',{name:'New chat'}).click();
+  await page.getByLabel('Message Codex').fill('Remember the fixture');
+  await page.getByRole('button',{name:'Send',exact:true}).click();
+  await page.getByText('Stored',{exact:true}).waitFor();
+  const other = await browser.newPage();
+  await other.goto(origin);
+  await other.getByRole('link',{name:'Sign in with Google'}).click();
+  await other.getByRole('button',{name:'Remember the fixture'}).click();
+  await other.getByLabel('Message Codex').fill('Recall it');
+  await other.getByRole('button',{name:'Send',exact:true}).click();
+  await other.getByText('I remember',{exact:true}).waitFor();
+  await page.reload();
+  await page.getByText('I remember',{exact:true}).waitFor();
+  await page.getByText('Stored',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'All chats'}).click();
+  await page.getByRole('button',{name:'Remember the fixture'}).waitFor();
+  assert.equal(await page.locator('#chat-list button').count(),1);
+  await other.close();
+  console.log('Verified fresh workspace, two independent signed-in clients, both turns on one chat and reload.');
   await page.getByRole('button', { name: 'Connect all accounts' }).click();
   await page.getByRole('heading', { name: 'Codex CLI' }).waitFor();
   assert.equal(

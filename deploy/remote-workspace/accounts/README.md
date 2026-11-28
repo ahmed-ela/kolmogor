@@ -12,6 +12,14 @@ U01 hosts the account process under its own unprivileged system user. A restrict
 
 Codex uses its device approval flow. Claude opens its official sign-in page and accepts its authorization code. Chrome runs with a real X display. Its viewer requires the owner's current Kolmogor session and an exact-origin WebSocket request. Viewer connections expire after 15 minutes and recheck the session after logout. Signing in to a Google website in that browser is independent of Kolmogor authentication. Chrome browser Sync is a separate product capability.
 
+## Workspace chats
+
+The **Chats** section in the iOS workspace and the Mac **Manage account** window opens the same account-owned history. Choose **New chat**, send a message, and open it again from **All chats**. The first message creates the chat. A workspace starts with an empty list. Existing desktop chats and third-party transcripts stay local until an explicit import is implemented.
+
+U01 runs one account service and one private SQLite database in WAL mode on durable node storage. The `workspace_chats` and `workspace_turns` tables use the server-derived workspace identity. Reads, pagination, and continuation check ownership. Store the chat title, prompts, replies, send receipts and provider-thread binding there. The pilot uses the connected Codex CLI in the user's isolated worker. Its own PVC holds the provider's credentials and continuation state. Keep backing up both the SQLite file using an online SQLite backup and the workspace PVC. Stopping a phone or refreshing the page does not cancel an accepted turn.
+
+The broker exposes a fixed chat operation. The phone can supply message text and a request ID. Only the service chooses the provider thread and only the broker chooses the executable and pod. A retry with the same request ID returns the original receipt. An interrupted service records an unconfirmed send and never automatically resubmits it. The pilot runs a single account-service writer. Moving to multiple account-service replicas requires coordinated dispatch/recovery and shared storage.
+
 ## Install on the workspace node
 
 1. Deploy the [K3s workspace](../k3s/README.md), its gateway, seccomp profile and pinned worker images. Install Node 24 at `/opt/node-runtime` and install `cloudflared` from Cloudflare's signed package repository.

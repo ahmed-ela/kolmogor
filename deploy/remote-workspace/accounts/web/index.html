@@ -15,6 +15,28 @@
       <p id="identity" role="status">Checking your session…</p>
       <a class="primary" id="login" href="/auth/google" hidden>Sign in with Google</a>
       <section id="workspace" hidden>
+        <section id="chats" aria-label="Workspace chats">
+          <header><h2 id="chat-heading">Chats</h2><div>
+            <button id="all-chats" hidden>All chats</button>
+            <button id="new-chat">New chat</button>
+          </div></header>
+          <div id="chat-index">
+            <p id="chat-empty" hidden>No workspace chats yet.</p>
+            <ul id="chat-list"></ul>
+            <button id="more-chats" hidden>More chats</button>
+          </div>
+          <div id="conversation" hidden>
+            <button id="older-turns" hidden>Earlier messages</button>
+            <ol id="messages" aria-label="Conversation"></ol>
+            <form id="chat-form">
+              <label for="chat-input">Message Codex</label>
+              <textarea id="chat-input" rows="3" required></textarea>
+              <button class="primary" id="chat-send">Send</button>
+            </form>
+          </div>
+          <p id="chat-status" role="status"></p>
+        </section>
+        <h2>Connections</h2>
         <button id="connect" class="primary">Connect all accounts</button>
         <p id="status" role="status"></p>
         <ul id="providers"></ul>
