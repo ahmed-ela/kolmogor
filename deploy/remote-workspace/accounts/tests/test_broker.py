@@ -34,7 +34,9 @@ class BrokerTests(unittest.TestCase):
         ns = "kolmogor-ws-u-" + "b" * 40
         with patch.object(broker, "allocation", return_value=True), patch.object(broker, "provider_state", return_value=True), patch.object(broker.subprocess, "Popen") as launch:
             message = {"thread": None, "prompt": "A literal chat message"}
-            for invalid in ({"thread": "--last", "prompt": "hi"}, dict(message, command="arbitrary"), {"prompt": "hi"}, {"thread": None, "prompt": "x" * 8193}):
+            for invalid in ({"thread": "--last", "prompt": "hi"}, dict(message, command="arbitrary"),
+                            dict(message, model=["bad"]), dict(message, model="--config override"),
+                            {"prompt": "hi"}, {"thread": None, "prompt": "x" * 8193}):
                 with self.assertRaises(ValueError):
                     broker.dispatch(ns, "chat", turn=invalid)
             launch.assert_not_called()
@@ -46,6 +48,19 @@ class BrokerTests(unittest.TestCase):
             self.assertEqual(seen, ["first"])
             self.assertEqual(launch.call_args.args[0], broker.container(ns, "codex", "node", "-e", broker.CHAT_WORKER, interactive=True))
             self.assertEqual(broker.json.loads(proc.stdin.write.call_args.args[0]), message)
+
+    def test_catalog_uses_only_the_authenticated_workspace_codex_worker(self):
+        ns = "kolmogor-ws-u-" + "b" * 40
+        with patch.object(broker, "allocation", return_value=True), patch.object(broker, "provider_state") as signed, patch.object(broker, "run") as run:
+            signed.return_value = False
+            self.assertEqual(broker.dispatch(ns, "chat-models")["status"], "disconnected")
+            run.assert_not_called()
+            signed.return_value = True
+            run.return_value.stdout = '{"models":[]}'
+            self.assertEqual(broker.dispatch(ns, "chat-models"), {"models":[]})
+            signed.assert_called_with(ns, "codex")
+            self.assertEqual(run.call_args.args[0], broker.container(ns, "codex", "node", "-e", broker.CHAT_WORKER, interactive=True))
+            self.assertEqual(broker.json.loads(run.call_args.kwargs["data"]), {"operation":"models"})
 
     def test_previous_workspace_is_upgraded_in_place(self):
         ns = "kolmogor-ws-u-" + "1" * 40

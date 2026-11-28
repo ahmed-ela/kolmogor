@@ -35,6 +35,9 @@ const server = accountServer({
   },
   broker: {
     async call(_workspace, action, provider, code) {
+      if (action === 'chat-models') return {models:[
+        {id:'fixture-a', name:'Fixture A', isDefault:true}, {id:'fixture-b', name:'Fixture B', isDefault:false}
+      ]};
       if (action === 'ensure') return { ready: true };
       if (action === 'status') return { ready: true, providers };
       if (action === 'code') {
@@ -55,7 +58,7 @@ const server = accountServer({
         message: 'Approve the synthetic connection.',
       };
     },
-    async chat(_owner,{thread,prompt}, onDelta) {
+    async chat(_owner,{thread,prompt,model}, onDelta) {
       const session = '10000000-0000-4000-8000-000000000003';
       if (prompt === 'A streamed fixture') {
         sendCount++;
@@ -63,13 +66,14 @@ const server = accountServer({
         onDelta('First part');
         firstChunk.resolve();
         await lastChunk.promise;
-        return {status:'completed',thread:session,reply:'First part and final.'};
+        return {status:'completed',thread:session,model,reply:'First part and final.'};
       }
       if (prompt === 'A long layout fixture')
-        return { status:'completed', thread:session, reply:'A readable paragraph on a narrow screen. '.repeat(240) };
+        return { status:'completed', thread:session, model, reply:'A readable paragraph on a narrow screen. '.repeat(240) };
       if (thread) assert.equal(thread,session);
       assert.equal(prompt,thread ? 'Recall it' : 'Remember the fixture');
-      return {status:'completed',thread:session,reply:thread ? 'I remember' : 'Stored'};
+      assert.equal(model,thread ? 'fixture-b' : 'fixture-a');
+      return {status:'completed',thread:session,model,reply:thread ? 'I remember' : 'Stored'};
     },
     async display() {
       return new Duplex({
@@ -138,12 +142,15 @@ try {
   await other.goto(origin);
   await other.getByRole('link',{name:'Sign in with Google'}).click();
   await other.getByRole('button',{name:'Remember the fixture'}).click();
+  await other.getByRole('combobox',{name:'Codex model'}).selectOption('fixture-b');
   await other.getByLabel('Message Codex').fill('Recall it');
   await other.getByRole('button',{name:'Send',exact:true}).click();
   await other.getByText('I remember',{exact:true}).waitFor();
   await page.reload();
   await page.getByText('I remember',{exact:true}).waitFor();
   await page.getByText('Stored',{exact:true}).waitFor();
+  await page.waitForFunction(() => document.querySelector('#chat-model').value === 'fixture-b');
+  assert.deepEqual(await page.locator('.agent-message strong').allTextContents(),['fixture-a','fixture-b']);
   await page.getByRole('button',{name:'All chats'}).click();
   await page.getByRole('button',{name:'Remember the fixture'}).waitFor();
   assert.equal(await page.locator('#chat-list button').count(),1);
@@ -173,6 +180,7 @@ try {
   for (const viewport of [{width:320,height:360},{width:740,height:290},{width:1024,height:720}]) {
     await page.setViewportSize(viewport);
     await fits(back);
+    await fits(page.getByLabel('Codex model'));
     await fits(send);
     const transcript = page.locator('#conversation');
     await transcript.evaluate(el=>{ el.scrollTop=0; });

@@ -6,6 +6,7 @@ const { readFileSync } = require('node:fs');
 const maxText = 96 * 1024;
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
 const cwd = '/opt/kolmogor-chat/workspace';
+const modelID = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,119}$/;
 function output(value) {
   process.stdout.write(JSON.stringify(value) + '\n');
 }
@@ -17,7 +18,7 @@ function launch() {
   });
 }
 
-async function reply({ thread, prompt }, start = launch, publish = output) {
+async function reply({ thread, prompt, model, operation }, start = launch, publish = output) {
   const proc = start();
   const stop = () => {
     if (proc.pid && proc.exitCode === null && proc.signalCode === null) {
@@ -32,6 +33,15 @@ async function reply({ thread, prompt }, start = launch, publish = output) {
   const timeout = setTimeout(stop, 115000);
   const send = (value) => proc.stdin.write(JSON.stringify(value) + '\n');
   const options = { cwd, sandbox: 'read-only', approvalPolicy: 'never', modelProvider: 'openai' };
+  const listOnly = operation === 'models';
+  const catalog = new Map(), cursors = new Set();
+  const list = (cursor) => send({id:4, method:'model/list', params:{modelProvider:'openai', includeHidden:false, limit:100, cursor}});
+  function openThread() {
+    if (model) options.model = model;
+    if (thread) options.threadId = thread;
+    send({id:2, method:thread ? 'thread/resume' : 'thread/start', params:options});
+  }
+  let resolvedModel, catalogResult, rerouted = false;
   let session, turn, item, answer, bytes = 0, completed = false, failed = false;
   try {
     send({ id: 1, method: 'initialize', params: {clientInfo: {name:'kolmogor_workspace',version:'1'}} });
@@ -42,12 +52,35 @@ async function reply({ thread, prompt }, start = launch, publish = output) {
         if (event.method || event.error) throw Error('Unexpected worker request or error');
         if (event.id === 1) {
           send({method:'initialized'});
-          send({id:2, method: thread ? 'thread/resume' : 'thread/start',
-            params: thread ? {...options, threadId:thread} : options});
+          if (listOnly || model) list(null);
+          else openThread();
+        } else if (event.id === 4) {
+          for (const row of event.result.data) {
+            if (!row.hidden && typeof row.model === 'string' && modelID.test(row.model))
+              catalog.set(row.model, {id:row.model, name:String(row.displayName || row.model).slice(0,120), isDefault:row.isDefault === true});
+          }
+          const cursor = event.result.nextCursor;
+          if (catalog.size > 256 || cursors.size > 10) throw Error('Unexpected catalog size');
+          if (cursor) {
+            if (cursors.has(cursor)) throw Error('Repeated model cursor');
+            cursors.add(cursor);
+            list(cursor);
+          } else if (listOnly || !catalog.has(model)) {
+            catalogResult = listOnly ? {models:[...catalog.values()]} : {status:'model_unavailable'};
+            proc.stdin.end();
+          } else openThread();
         } else if (event.id === 2) {
           session = event.result?.thread?.id;
           if (!uuid.test(session) || (thread && session !== thread)) throw Error('Thread mismatch');
-          send({id:3, method:'turn/start', params:{threadId:session, input:[{type:'text',text:prompt}]}});
+          resolvedModel = event.result.model;
+          if (model && resolvedModel !== model) {
+            catalogResult = {status:'model_unavailable'};
+            proc.stdin.end();
+          } else {
+            const params = {threadId:session, input:[{type:'text',text:prompt}]};
+            if (model) params.model = model;
+            send({id:3, method:'turn/start', params});
+          }
         } else if (event.id === 3) {
           turn = event.result?.turn?.id;
           if (!turn) throw Error('Missing turn');
@@ -62,6 +95,13 @@ async function reply({ thread, prompt }, start = launch, publish = output) {
         continue;
       }
       if (completed || failed || p.turnId !== turn) continue;
+      if (event.method === 'model/rerouted') {
+        if (p.fromModel !== resolvedModel || typeof p.toModel !== 'string' || !modelID.test(p.toModel))
+          throw Error('Invalid model reroute');
+        resolvedModel = p.toModel;
+        rerouted = true;
+        continue;
+      }
       if (event.method === 'item/started' && p.item?.type === 'agentMessage' && p.item.phase === 'final_answer') {
         if (item) throw Error('Multiple final answer items');
         item = p.item.id;
@@ -74,9 +114,11 @@ async function reply({ thread, prompt }, start = launch, publish = output) {
         answer = p.item.text;
       }
     }
-    if (await closed === 0 && completed && !failed && typeof answer === 'string' &&
+    const code = await closed;
+    if (code === 0 && catalogResult) return catalogResult;
+    if (code === 0 && completed && !failed && typeof answer === 'string' &&
         answer.trim() && Buffer.byteLength(answer) <= maxText)
-      return {status:'completed', thread:session, reply:answer};
+      return {status:'completed', thread:session, reply:answer, ...(resolvedModel ? {model:resolvedModel} : {}), ...(rerouted && {rerouted})};
     return {status:failed ? 'failed' : 'interrupted', thread:session};
   } finally {
     clearTimeout(timeout);

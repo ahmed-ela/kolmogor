@@ -96,6 +96,11 @@ a, .text-button { color: var(--accent); }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 #conversation { flex: 1; }
+#chat-model {
+  min-width: 44px; max-width: 48%; min-height: 44px; padding: 0 8px;
+  font: inherit; font-size: max(16px, .95rem); color: var(--ink);
+  background-color: var(--surface); border: 0; border-radius: 12px;
+}
 .reading-column { max-width: 650px; margin-inline: auto; padding: 18px var(--pad); }
 #draft-greeting { min-height: min(33vh, 220px); }
 #messages li + li { margin-top: 24px; }

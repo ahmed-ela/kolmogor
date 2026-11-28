@@ -4,6 +4,7 @@ import { LiveReply, serveReply } from './reply-stream.mjs';
 
 export const chatID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const pageSize = 30;
+const modelID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$/;
 
 export class ChatError extends Error {
   constructor(status, message) {
@@ -34,6 +35,14 @@ export class WorkspaceChats {
       CREATE UNIQUE INDEX IF NOT EXISTS chat_inflight ON workspace_turns(owner,chat) WHERE state='working';
       UPDATE workspace_turns SET state='interrupted', error='The chat service restarted before it could confirm the reply. Your message was saved.' WHERE state='working';
     `);
+    for (const [table, columns] of [
+      ['workspace_chats', ['model']],
+      ['workspace_turns', ['requested_model', 'model']],
+    ]) {
+      const existing = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name));
+      for (const column of columns)
+        if (!existing.has(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
+    }
   }
 
   list(owner, before) {
@@ -49,19 +58,19 @@ export class WorkspaceChats {
 
   read(owner, id, before) {
     const chat = this.db
-      .prepare('SELECT id,title FROM workspace_chats WHERE owner=? AND id=?')
+      .prepare('SELECT id,title,model FROM workspace_chats WHERE owner=? AND id=?')
       .get(owner, id);
     if (!chat) throw new ChatError(404, 'Chat not found.');
     const rows = this.db
       .prepare(
-        'SELECT seq,request,prompt,reply,state,error FROM workspace_turns WHERE owner=? AND chat=? AND seq<? ORDER BY seq DESC LIMIT ?',
+        'SELECT seq,request,prompt,reply,state,error,requested_model AS requestedModel,model FROM workspace_turns WHERE owner=? AND chat=? AND seq<? ORDER BY seq DESC LIMIT ?',
       )
       .all(owner, id, before, pageSize + 1);
     const turns = rows.slice(0, pageSize).reverse();
     return { ...chat, turns, next: rows.length > pageSize ? turns[0].seq : null };
   }
 
-  send(owner, target, request, prompt) {
+  send(owner, target, request, prompt, model) {
     if (
       typeof request !== 'string' ||
       !chatID.test(request) ||
@@ -70,8 +79,10 @@ export class WorkspaceChats {
       Buffer.byteLength(prompt) > 8192
     )
       throw new ChatError(400, 'Enter a message of up to 8 KB.');
+    if (model !== undefined && (typeof model !== 'string' || !modelID.test(model)))
+      throw new ChatError(400, 'Choose a valid Codex model.');
     const fingerprint = createHash('sha256')
-      .update(JSON.stringify([target, prompt]))
+      .update(JSON.stringify(model === undefined ? [target, prompt] : [target, prompt, model]))
       .digest('hex');
     const old = this.db
       .prepare('SELECT chat,request,fingerprint FROM workspace_turns WHERE owner=? AND request=?')
@@ -86,7 +97,7 @@ export class WorkspaceChats {
     try {
       if (target) {
         chat = this.db
-          .prepare('SELECT id,provider_thread FROM workspace_chats WHERE owner=? AND id=?')
+          .prepare('SELECT id,provider_thread,model FROM workspace_chats WHERE owner=? AND id=?')
           .get(owner, target);
         if (!chat) throw new ChatError(404, 'Chat not found.');
         if (
@@ -109,11 +120,12 @@ export class WorkspaceChats {
           .prepare('INSERT INTO workspace_chats(id,owner,title,updated) VALUES(?,?,?,0)')
           .run(chat.id, owner, title);
       }
+      model ??= chat.model ?? undefined;
       const { lastInsertRowid } = this.db
         .prepare(
-          "INSERT INTO workspace_turns(owner,chat,request,fingerprint,prompt,state) VALUES(?,?,?,?,?,'working')",
+          "INSERT INTO workspace_turns(owner,chat,request,fingerprint,prompt,requested_model,state) VALUES(?,?,?,?,?,?,'working')",
         )
-        .run(owner, chat.id, request, fingerprint, prompt);
+        .run(owner, chat.id, request, fingerprint, prompt, model ?? null);
       this.db
         .prepare('UPDATE workspace_chats SET updated=? WHERE owner=? AND id=?')
         .run(lastInsertRowid, owner, chat.id);
@@ -122,18 +134,18 @@ export class WorkspaceChats {
       this.db.exec('ROLLBACK');
       throw error;
     }
-    void this.finish(owner, chat, request, prompt).catch(() =>
+    void this.finish(owner, chat, request, prompt, model).catch(() =>
       console.error('Workspace chat result could not be saved'),
     );
     return { id: chat.id, request };
   }
 
-  async finish(owner, chat, request, prompt) {
+  async finish(owner, chat, request, prompt, model) {
     const live = new LiveReply();
     this.live.set(chat.id, live);
     let result;
     try {
-      result = await this.run(owner, { thread: chat.provider_thread, prompt }, (delta) => live.append(delta));
+      result = await this.run(owner, { thread: chat.provider_thread, prompt, ...(model && {model}) }, (delta) => live.append(delta));
     } catch {
       result = null;
     }
@@ -146,6 +158,7 @@ export class WorkspaceChats {
     const valid =
       thread &&
       result.status === 'completed' &&
+      (!model || result.model === model || (result.rerouted === true && modelID.test(result.model ?? ''))) &&
       typeof result.reply === 'string' &&
       result.reply.trim() &&
       Buffer.byteLength(result.reply) <= 98304;
@@ -153,6 +166,7 @@ export class WorkspaceChats {
       disconnected: 'Connect Codex in this workspace and send again.',
       failed: 'Codex could not complete this reply.',
       capacity: 'The workspace is still starting. Try again when Codex is connected.',
+      model_unavailable: 'This Codex model is unavailable. Choose another model and send again.',
     };
     const confirmedFailure = Object.hasOwn(messages, result?.status);
     const state = valid ? 'completed' : confirmedFailure ? 'failed' : 'interrupted';
@@ -165,13 +179,13 @@ export class WorkspaceChats {
     try {
       const changed = this.db
         .prepare(
-          "UPDATE workspace_turns SET reply=?,state=?,error=? WHERE owner=? AND request=? AND state='working'",
+          "UPDATE workspace_turns SET reply=?,state=?,error=?,model=? WHERE owner=? AND request=? AND state='working'",
         )
-        .run(valid ? result.reply : null, state, error, owner, request).changes;
+        .run(valid ? result.reply : null, state, error, valid ? result.model ?? null : null, owner, request).changes;
       if (changed && thread)
         this.db
-          .prepare('UPDATE workspace_chats SET provider_thread=? WHERE owner=? AND id=?')
-          .run(thread, owner, chat.id);
+          .prepare('UPDATE workspace_chats SET provider_thread=?,model=coalesce(?,model) WHERE owner=? AND id=?')
+          .run(thread, valid ? model ?? result.model ?? null : null, owner, chat.id);
       this.db.exec('COMMIT');
     } catch (err) {
       this.db.exec('ROLLBACK');
@@ -217,5 +231,5 @@ export async function chatRoute({ chats, workspace, req, res, url, json, authori
   } catch {
     throw new ChatError(400, 'Invalid message.');
   }
-  return json(202, chats.send(workspace, id, data?.request, data?.prompt));
+  return json(202, chats.send(workspace, id, data?.request, data?.prompt, data?.model));
 }

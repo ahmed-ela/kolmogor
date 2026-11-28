@@ -22,7 +22,9 @@ The workspace streams Codex's answer text from its private app-server transport.
 
 When upgrading an existing workspace, apply the updated Codex pod manifest before starting the new broker. The CLI pod mounts the same account and session volume at an additional path with read-only empty configuration and rules for chat inference. Its normal interactive configuration remains available at the original path.
 
-The broker exposes a fixed chat operation. The phone can supply message text and a request ID. Only the service chooses the provider thread and only the broker chooses the executable and pod. A retry with the same request ID returns the original receipt. An interrupted service records an unconfirmed send and never automatically resubmits it. The pilot runs a single account-service writer. Moving to multiple account-service replicas requires coordinated dispatch/recovery and shared storage.
+In a chat, use the model picker to choose from the signed-in workspace’s visible Codex models. The next send applies the selection to the existing thread. Completed replies record the model reported by Codex, and reopening restores the last successful selection. Older replies without model metadata retain the Codex label.
+
+The broker exposes fixed chat and model-list operations. The phone can supply message text, an optional model ID and a request ID. Only the service chooses the provider thread and only the broker chooses the executable and pod. A retry with the same request ID returns the original receipt. An interrupted service records an unconfirmed send and never automatically resubmits it. The pilot runs a single account-service writer. Moving to multiple account-service replicas requires coordinated dispatch/recovery and shared storage.
 
 ## Install on the workspace node
 

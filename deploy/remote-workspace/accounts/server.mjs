@@ -151,6 +151,8 @@ export function accountServer({ origin, accounts, google, broker, admit = () => 
       if (req.method === 'GET' && path === '/api/me') return json(200, { email: user?.email ?? null });
       if (!user) return fail(401, 'Sign in to Kolmogor first.');
       const workspace = workspaceFor(user.subject);
+      if (req.method === 'GET' && path === '/api/chats/models')
+        return json(200, await broker.call(workspace, 'chat-models'));
       if (path === '/api/chats' || path.startsWith('/api/chats/'))
         return await chatRoute({ chats, workspace, req, res, url, json, authorized: () => Boolean(currentUser(token)) });
       if (post && path === '/auth/logout') {
