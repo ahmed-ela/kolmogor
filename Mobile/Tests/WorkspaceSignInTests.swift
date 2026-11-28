@@ -26,12 +26,23 @@ final class WorkspaceSignInTests: XCTestCase {
         XCTAssertEqual(URLComponents(url: attempt.start, resolvingAgainstBaseURL: false)?.queryItems, [.init(name: "challenge", value: expected)])
     }
 
+    func testEmptyFragmentOnSystemBrowserReturnRedeemsTheSameTicket() throws {
+        let attempt = try WorkspaceSignIn()
+        let base = "kolmogor-account://complete?ticket=" + ticket
+        let plain = try attempt.redeem(XCTUnwrap(URL(string: base)))
+        let fromBrowser = try attempt.redeem(XCTUnwrap(URL(string: base + "#")))
+        XCTAssertEqual(fromBrowser, plain)
+        XCTAssertEqual(fromBrowser.httpBody, plain.httpBody)
+    }
+
     func testRejectsWrongOrAmbiguousCallbacks() throws {
         let attempt = try WorkspaceSignIn()
         for raw in ["https://complete?ticket=" + ticket, "kolmogor-account://other?ticket=" + ticket,
                     "kolmogor-account://complete/unexpected?ticket=" + ticket, "kolmogor-account://complete?ticket=short",
                     "kolmogor-account://complete?ticket=" + ticket + "&ticket=" + ticket,
-                    "kolmogor-account://complete?ticket=" + ticket + "#fragment", "kolmogor-account://user@complete?ticket=" + ticket] {
+                    "kolmogor-account://complete?ticket=" + ticket + "#fragment",
+                    "kolmogor-account://complete?ticket=" + ticket + "#%00", "kolmogor-account://complete#ticket=" + ticket,
+                    "kolmogor-account://complete?ticket=short#", "kolmogor-account://user@complete?ticket=" + ticket] {
             XCTAssertThrowsError(try attempt.redeem(XCTUnwrap(URL(string: raw))))
         }
     }
