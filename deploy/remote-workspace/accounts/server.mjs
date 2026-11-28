@@ -151,8 +151,17 @@ export function accountServer({ origin, accounts, google, broker, admit = () => 
       if (req.method === 'GET' && path === '/api/me') return json(200, { email: user?.email ?? null });
       if (!user) return fail(401, 'Sign in to Kolmogor first.');
       const workspace = workspaceFor(user.subject);
-      if (req.method === 'GET' && path === '/api/chats/models')
-        return json(200, await broker.call(workspace, 'chat-models'));
+      if (req.method === 'GET' && path === '/api/chats/models') {
+        const sources = ['codex','gemini'];
+        const catalogs = await Promise.allSettled(sources.map(p => broker.call(workspace,'chat-models',p)));
+        const models = [], providers = {};
+        for (const [i,source] of sources.entries()) {
+          const catalog = catalogs[i].value;
+          providers[source] = {status:catalog?.status || (catalog?.models?.length ? 'connected' : 'unavailable'), plan:catalog?.plan};
+          for (const row of catalog?.models || []) models.push({...row,provider:source});
+        }
+        return json(200,{models,providers});
+      }
       if (path === '/api/chats' || path.startsWith('/api/chats/'))
         return await chatRoute({ chats, workspace, req, res, url, json, authorized: () => Boolean(currentUser(token)) });
       if (post && path === '/auth/logout') {
@@ -163,8 +172,9 @@ export function accountServer({ origin, accounts, google, broker, admit = () => 
       if (post && path === '/api/workspace') return json(200, await broker.call(workspace, 'ensure'));
       if (req.method === 'GET' && path === '/api/connections')
         return json(200, await broker.call(workspace, 'status'));
-      const route = /^\/api\/connections\/(codex|claude|antigravity|chrome)\/(start|code)$/.exec(path);
+      const route = /^\/api\/connections\/(codex|claude|antigravity|chrome)\/(start|code|switch)$/.exec(path);
       if (post && route && providers.has(route[1])) {
+        if (route[2] === 'switch' && route[1] !== 'codex') return fail(404,'Unknown action.');
         const form = await body(req);
         return json(
           200,

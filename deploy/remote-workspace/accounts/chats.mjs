@@ -5,6 +5,26 @@ import { LiveReply, serveReply } from './reply-stream.mjs';
 export const chatID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const pageSize = 30;
 const modelID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$/;
+const providerOf = model => model?.startsWith('gemini/') ? 'gemini' : 'codex';
+
+// Transfer recent completed exchanges only. Keep the account boundary and the
+// original transcript in SQLite even when the receiving CLI starts a new session.
+function transferredHistory(db, owner, chat) {
+  const rows = db.prepare("SELECT prompt,reply FROM workspace_turns WHERE owner=? AND chat=? AND state='completed' ORDER BY seq DESC LIMIT 65").all(owner,chat);
+  const turns = [];
+  let size = 100, partial = false;
+  for (const row of rows) {
+    const bytes = Buffer.byteLength(JSON.stringify(row)) + 1;
+    if (turns.length === 64 || size + bytes > 32768) {
+      partial = true;
+      if (!turns.length) turns.push({prompt:row.prompt.slice(-1900),reply:row.reply.slice(-1900)});
+      break;
+    }
+    size += bytes;
+    turns.push(row);
+  }
+  return JSON.stringify({partial,turns:turns.reverse()});
+}
 
 export class ChatError extends Error {
   constructor(status, message) {
@@ -36,7 +56,7 @@ export class WorkspaceChats {
       UPDATE workspace_turns SET state='interrupted', error='The chat service restarted before it could confirm the reply. Your message was saved.' WHERE state='working';
     `);
     for (const [table, columns] of [
-      ['workspace_chats', ['model']],
+      ['workspace_chats', ['model','thread_provider']],
       ['workspace_turns', ['requested_model', 'model']],
     ]) {
       const existing = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name));
@@ -80,7 +100,7 @@ export class WorkspaceChats {
     )
       throw new ChatError(400, 'Enter a message of up to 8 KB.');
     if (model !== undefined && (typeof model !== 'string' || !modelID.test(model)))
-      throw new ChatError(400, 'Choose a valid Codex model.');
+      throw new ChatError(400, 'Choose a valid model.');
     const fingerprint = createHash('sha256')
       .update(JSON.stringify(model === undefined ? [target, prompt] : [target, prompt, model]))
       .digest('hex');
@@ -97,7 +117,7 @@ export class WorkspaceChats {
     try {
       if (target) {
         chat = this.db
-          .prepare('SELECT id,provider_thread,model FROM workspace_chats WHERE owner=? AND id=?')
+          .prepare('SELECT id,provider_thread,thread_provider,model FROM workspace_chats WHERE owner=? AND id=?')
           .get(owner, target);
         if (!chat) throw new ChatError(404, 'Chat not found.');
         if (
@@ -144,15 +164,19 @@ export class WorkspaceChats {
     const live = new LiveReply();
     this.live.set(chat.id, live);
     let result;
+    const provider = providerOf(model);
+    const switching = chat.provider_thread && provider !== (chat.thread_provider || 'codex');
+    const previousThread = switching ? null : chat.provider_thread;
     try {
-      result = await this.run(owner, { thread: chat.provider_thread, prompt, ...(model && {model}) }, (delta) => live.append(delta));
+      result = await this.run(owner, { thread: previousThread, prompt, ...(model && {model}),
+        ...(switching && {context:transferredHistory(this.db,owner,chat.id)}) }, (delta) => live.append(delta));
     } catch {
       result = null;
     }
     const thread =
       typeof result?.thread === 'string' &&
       chatID.test(result.thread) &&
-      (!chat.provider_thread || result.thread === chat.provider_thread)
+      (!previousThread || result.thread === previousThread)
         ? result.thread
         : null;
     const valid =
@@ -163,10 +187,10 @@ export class WorkspaceChats {
       result.reply.trim() &&
       Buffer.byteLength(result.reply) <= 98304;
     const messages = {
-      disconnected: 'Connect Codex in this workspace and send again.',
-      failed: 'Codex could not complete this reply.',
-      capacity: 'The workspace is still starting. Try again when Codex is connected.',
-      model_unavailable: 'This Codex model is unavailable. Choose another model and send again.',
+      disconnected: 'Connect ' + (provider === 'gemini' ? 'Antigravity' : 'Codex') + ' in this workspace and send again.',
+      failed: 'The model could not complete this reply.',
+      capacity: 'The workspace is still starting. Try again when it is ready.',
+      model_unavailable: 'This model is unavailable. Choose another model and send again.',
     };
     const confirmedFailure = Object.hasOwn(messages, result?.status);
     const state = valid ? 'completed' : confirmedFailure ? 'failed' : 'interrupted';
@@ -182,10 +206,10 @@ export class WorkspaceChats {
           "UPDATE workspace_turns SET reply=?,state=?,error=?,model=? WHERE owner=? AND request=? AND state='working'",
         )
         .run(valid ? result.reply : null, state, error, valid ? result.model ?? null : null, owner, request).changes;
-      if (changed && thread)
+      if (changed && thread && (valid || !switching))
         this.db
-          .prepare('UPDATE workspace_chats SET provider_thread=?,model=coalesce(?,model) WHERE owner=? AND id=?')
-          .run(thread, valid ? model ?? result.model ?? null : null, owner, chat.id);
+          .prepare('UPDATE workspace_chats SET provider_thread=?,thread_provider=?,model=coalesce(?,model) WHERE owner=? AND id=?')
+          .run(thread, provider, valid ? model ?? result.model ?? null : null, owner, chat.id);
       this.db.exec('COMMIT');
     } catch (err) {
       this.db.exec('ROLLBACK');

@@ -42,7 +42,7 @@ function clearStep() {
   $('#instructions input').value = '';
   $('#authorize').removeAttribute('href');
 }
-async function start(provider) {
+async function start(provider, switchAccount = false) {
   if (active !== provider) clearStep();
   active = provider;
   $('#instructions').hidden = false;
@@ -51,7 +51,7 @@ async function start(provider) {
   $('#skip').hidden = !queue;
   $('#instructions form').hidden = true;
   $('#authorize').hidden = true;
-  const data = await api('/api/connections/' + provider + '/start', 'POST');
+  const data = await api('/api/connections/' + provider + (switchAccount ? '/switch' : '/start'), 'POST');
   if (active !== provider) return;
   if (data.connected) {
     clearStep();
@@ -116,14 +116,15 @@ function renderProviders(providers) {
       provider === 'chrome'
         ? 'Open browser'
         : status === 'connected'
-          ? 'Check connection'
+          ? (provider === 'codex' ? 'Switch account' : 'Check connection')
           : status === 'pending'
             ? 'Continue'
             : 'Connect';
     button.onclick = () =>
       busy(button, async () => {
         queue = null;
-        if (provider !== 'chrome' && status === 'connected') await refresh();
+        if (provider === 'codex' && status === 'connected') await start(provider,true);
+        else if (provider !== 'chrome' && status === 'connected') await refresh();
         else await start(provider);
       });
     label.append(sub);

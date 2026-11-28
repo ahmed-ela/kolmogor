@@ -212,11 +212,24 @@ class Login:
 
 
 CHAT_WORKER = (ROOT / "codex-chat.cjs").read_text()
+GEMINI_WORKER = (ROOT / "gemini-chat.cjs").read_text()
 THREAD_ID = re.compile(r"[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}")
 
 
+def gemini_models(ns):
+    proc = run(container(ns, "antigravity", "agy", "models"), check=False, timeout=15)
+    if proc.returncode:
+        return {"models": [], "status": "disconnected"}
+    models = {}
+    for line in proc.stdout.splitlines():
+        slug, _, name = line.partition("\t")
+        if re.fullmatch(r"gemini-[a-z0-9][a-z0-9.-]{0,110}", slug) and name.strip():
+            models[slug] = {"id": "gemini/" + slug, "name": name.strip()[:120]}
+    return {"models": list(models.values())}
+
+
 def chat_reply(ns, turn, on_delta):
-    if not isinstance(turn, dict) or set(turn) not in ({"thread", "prompt"}, {"thread", "prompt", "model"}):
+    if not isinstance(turn, dict) or not {"thread", "prompt"} <= set(turn) <= {"thread", "prompt", "model", "context"}:
         raise ValueError("Invalid chat turn.")
     if "model" in turn and (not isinstance(turn["model"], str) or
                             not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}", turn["model"])):
@@ -226,10 +239,23 @@ def chat_reply(ns, turn, on_delta):
         raise ValueError("Invalid chat thread.")
     if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode()) > 8192:
         raise ValueError("Invalid chat message.")
-    if not provider_state(ns, "codex"):
+    context = turn.get("context")
+    if "context" in turn and (not isinstance(context, str) or len(context.encode()) > 32768 or thread is not None):
+        raise ValueError("Invalid chat context.")
+    model = turn.get("model", "")
+    gemini = model.startswith("gemini/")
+    provider = "antigravity" if gemini else "codex"
+    if not provider_state(ns, provider):
         return {"status": "disconnected"}
+    turn = dict(turn)
+    if gemini:
+        turn["model"] = model.removeprefix("gemini/")
+    if context:
+        turn["prompt"] = ("This chat switched providers. Earlier completed messages follow as JSON.\n"
+                          + context + "\nCurrent user message:\n" + prompt)
+    turn.pop("context", None)
     # User input is stdin data. Neither the executable nor its arguments come from the HTTP client.
-    cmd = container(ns, "codex", "node", "-e", CHAT_WORKER, interactive=True)
+    cmd = container(ns, provider, "node", "-e", GEMINI_WORKER if gemini else CHAT_WORKER, interactive=True)
     with subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           stderr=subprocess.DEVNULL) as proc:
         deadline = threading.Timer(125, proc.kill)
@@ -251,6 +277,10 @@ def chat_reply(ns, turn, on_delta):
                 else:
                     result = frame
             if proc.wait() == 0 and isinstance(result, dict) and "status" in result:
+                if gemini and result.get("status") == "completed":
+                    if result.get("model") != turn["model"]:
+                        return {"status": "interrupted"}
+                    result["model"] = model
                 return result
             return {"status": "interrupted"}
         finally:
@@ -262,11 +292,17 @@ def chat_reply(ns, turn, on_delta):
 def dispatch(ns, action, provider=None, code=None, turn=None, on_delta=lambda _text: None):
     if not isinstance(ns, str) or not NAMESPACE.fullmatch(ns):
         raise ValueError("Invalid workspace.")
-    if action not in ("ensure", "status", "start", "code", "display", "chat", "chat-models") or (
+    if action == "switch" and provider != "codex":
+        raise ValueError("Unknown workspace operation.")
+    if action not in ("ensure", "status", "start", "switch", "code", "display", "chat", "chat-models") or (
             action in ("start", "code") and provider not in (*DEPLOYMENTS, "chrome")):
         raise ValueError("Unknown workspace operation.")
     ready = allocation(ns, ensure=action == "ensure")
     if action == "chat-models":
+        if provider == "gemini":
+            return gemini_models(ns) if ready else {"models": [], "status": "capacity"}
+        if provider not in (None, "codex"):
+            raise ValueError("Unknown workspace operation.")
         if not ready or not provider_state(ns, "codex"):
             return {"models": [], "status": "disconnected" if ready else "capacity"}
         process = run(container(ns, "codex", "node", "-e", CHAT_WORKER, interactive=True),
@@ -308,7 +344,7 @@ def dispatch(ns, action, provider=None, code=None, turn=None, on_delta=lambda _t
         starting.add(key)
     try:
         run([str(WORKSPACE), ns, "start", provider], timeout=140)
-        if provider_state(ns, provider):
+        if action != "switch" and provider_state(ns, provider):
             return {"connected": True}
         login = Login(ns, provider)
         with LOCK:
@@ -331,8 +367,9 @@ class Handler(socketserver.StreamRequestHandler):
     def handle(self):
         self.request.settimeout(12)
         try:
-            line = self.rfile.readline(65537)
-            if len(line) > 65536 or not line.endswith(b"\n"):
+            # The broker's private chat envelope can include bounded history from SQLite.
+            line = self.rfile.readline(262145)
+            if len(line) > 262144 or not line.endswith(b"\n"):
                 return
             msg = json.loads(line)
             if msg.get("action") != "chat" and len(line) > 4096:
