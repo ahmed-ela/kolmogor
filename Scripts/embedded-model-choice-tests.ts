@@ -754,6 +754,18 @@ export function defineWebsiteModelChoiceTests(provider: 'chatgpt' | 'gemini' | '
       expect(opus.clicks).toBe(0); expect(f.send.clicks).toBe(0);
     });
 
+    if (provider === 'chatgpt') test('a checked Latest alias requires selecting and verifying the newest numbered family', async () => {
+      const { f, picker } = setup();
+      const alias = new Node('DIV', {role:'menuitemradio', 'aria-checked':'true'}, 'Latest');
+      for (const node of picker.familyOptions) node.values['aria-checked'] = 'false';
+      picker.familyOptions.push(alias);
+      const result = await advance(f, 'discoverModels');
+      expect(result.modelEvidence?.chatSelection.family.label).toBe('GPT-6');
+      expect(result.modelEvidence.chatSelection.automaticFamily.offered).not.toContain('Latest');
+      expect(picker.familyOptions[0].clicks).toBe(1);
+      expect(alias.clicks).toBe(0);
+      expect(f.composer.textContent).toBe('');
+    });
     if (provider === 'chatgpt') test('discovery resolves the newest plain family and never advertises Sol or a literal Latest', async () => {
       const { f, picker } = setup(); picker.selected('GPT-5.6 Sol');
       const sol = picker.familyOptions[1], newest = picker.familyOptions[0];

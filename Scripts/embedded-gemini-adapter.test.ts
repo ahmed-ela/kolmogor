@@ -1717,6 +1717,30 @@ describe('Gemini model-only verification', () => {
     expect(f.send.clicks).toBe(0);
   });
 
+  test('the compact grid must return to a verified checked list before proving a model', async () => {
+    for (const drift of [false, true]) {
+      const { f, picker } = ownedGenericPicker();
+      expect(await f.run('inspect')).toMatchObject({ firstUserVerified: true });
+      const overlay = new Element('DIV', {class:'cdk-overlay-pane'});
+      const popover = new Element('DIV', {class:'popover-menu periodic-compact','data-test-id':'picker'});
+      const grid = new Element('COMPACT-PERIODIC-PICKER');
+      const list = new Element('BUTTON', {class:'compact-btn list-view-btn'});
+      grid.append(list); popover.append(grid); overlay.append(popover);
+      const toggle = picker.trigger.onClick!;
+      picker.trigger.onClick = () => {
+        if (picker.menu.connected) return toggle();
+        f.body.append(overlay); picker.trigger.values['aria-expanded'] = 'true';
+      };
+      list.onClick = () => { overlay.connected = false; toggle(); if (drift) picker.selected('3.8 Flash'); };
+      const result = await f.run('verifyModel', { expectedModelChoice });
+      expect(list.clicks).toBe(1);
+      if (drift) expect(result.error).toBe('model_mismatch');
+      else expect(result.modelEvidence?.selected).toEqual(expectedModelChoice);
+      expect(picker.options.every(option => option.clicks === 0)).toBe(true);
+      expect(f.send.clicks).toBe(0);
+    }
+  });
+
   test('the single proof read still rejects model or ownership drift while its picker opens', async () => {
     for (const fault of ['model', 'disabled', 'owner', 'route', 'temporary', 'body']) {
       const { f, picker } = ownedGenericPicker();
@@ -1745,6 +1769,29 @@ describe('Gemini model-only verification', () => {
 });
 
 describe("observed Gemini Argon family identity", () => {
+  test("Auto can open the menu and select a named model but cannot verify one", async () => {
+    const expectedModelChoice = { key: "3.1 Pro", label: "3.1 Pro" };
+    function automaticPicker() {
+      const f = fixture(provider);
+      const picker = installObservedModelPicker(f, provider, Element, { geminiMenuitemMarkers: true });
+      picker.add(picker.menu, "Auto", "Everyday help");
+      picker.selected("Auto");
+      picker.trigger.values["aria-label"] = "Open mode picker, currently Auto";
+      return { f, picker };
+    }
+    const discovery = automaticPicker();
+    const found = await advanceGeminiPicker(discovery.f, "discoverModels");
+    expect(found.modelChoices.map((choice: any) => choice.label)).toContain("3.1 Pro");
+    expect(found.modelChoices.map((choice: any) => choice.label)).not.toContain("Auto");
+    expect(found.modelEvidence).toBeFalsy();
+    const selection = automaticPicker();
+    const chosen = await advanceGeminiPicker(selection.f, "selectModel", { modelChoice: expectedModelChoice });
+    expect(chosen.modelEvidence.selected).toEqual(expectedModelChoice);
+    selection.picker.trigger.values["aria-label"] = "Open mode picker, currently Auto";
+    expect(await selection.f.run("verifyModel", { expectedModelChoice })).toMatchObject({ error: "model_unverified" });
+    expect(selection.f.send.clicks).toBe(0);
+  });
+
   test("the observed Argon picker discovers all four families without sending or changing selection", async () => {
     const { f, picker } = observedGeminiArgonPicker();
     const result = await advanceGeminiPicker(f, "discoverModels");
