@@ -2,6 +2,7 @@ import { openChats } from './chat.js';
 
 const $ = (selector) => document.querySelector(selector);
 const names = { codex: 'Codex CLI', claude: 'Claude Code', antigravity: 'Antigravity CLI', chrome: 'Chrome' };
+let renderedProviders;
 let active,
   display,
   timer,
@@ -92,52 +93,58 @@ async function next(states) {
     ? 'All accounts are connected.'
     : 'Connection setup finished. You can connect the remaining accounts individually.';
 }
+function renderProviders(providers) {
+  const signature = JSON.stringify(Object.keys(names).map((key) => providers[key]));
+  if (signature === renderedProviders) return;
+  const rows = [];
+  for (const [provider, name] of Object.entries(names)) {
+    const row = document.createElement('li'),
+      label = document.createElement('span'),
+      sub = document.createElement('small'),
+      button = document.createElement('button');
+    const status = providers[provider];
+    label.textContent = name;
+    sub.textContent =
+      status === 'connected'
+        ? 'Connected'
+        : status === 'ready'
+          ? 'Private browser ready'
+          : status === 'pending'
+            ? 'Sign-in in progress'
+            : 'Available to connect';
+    button.textContent =
+      provider === 'chrome'
+        ? 'Open browser'
+        : status === 'connected'
+          ? 'Check connection'
+          : status === 'pending'
+            ? 'Continue'
+            : 'Connect';
+    button.onclick = () =>
+      busy(button, async () => {
+        queue = null;
+        if (provider !== 'chrome' && status === 'connected') await refresh();
+        else await start(provider);
+      });
+    label.append(sub);
+    row.append(label, button);
+    rows.push(row);
+  }
+  $('#providers').replaceChildren(...rows);
+  renderedProviders = signature;
+}
 async function refresh() {
   if (loading) return;
   loading = true;
   try {
     const state = await api('/api/connections');
     if (!state.ready) {
-      $('#status').textContent = 'Preparing your private workspace…';
+      $('#provider-health').textContent = 'Preparing your private workspace…';
       await api('/api/workspace', 'POST');
       return;
     }
-    if (!$('#providers').children.length) $('#status').textContent = '';
-    const rows = [];
-    for (const [provider, name] of Object.entries(names)) {
-      const row = document.createElement('li'),
-        label = document.createElement('span'),
-        sub = document.createElement('small'),
-        button = document.createElement('button');
-      const status = state.providers[provider];
-      label.textContent = name;
-      sub.textContent =
-        status === 'connected'
-          ? 'Connected'
-          : status === 'ready'
-            ? 'Private browser ready'
-            : status === 'pending'
-              ? 'Sign-in in progress'
-              : 'Available to connect';
-      button.textContent =
-        provider === 'chrome'
-          ? 'Open browser'
-          : status === 'connected'
-            ? 'Check connection'
-            : status === 'pending'
-              ? 'Continue'
-              : 'Connect';
-      button.onclick = () =>
-        busy(button, async () => {
-          queue = null;
-          if (provider !== 'chrome' && status === 'connected') await refresh();
-          else await start(provider);
-        });
-      label.append(sub);
-      row.append(label, button);
-      rows.push(row);
-    }
-    $('#providers').replaceChildren(...rows);
+    $('#provider-health').textContent = '';
+    renderProviders(state.providers);
     if (queue && (!active || state.providers[active] === 'connected')) await next(state.providers);
     else if (active && state.providers[active] === 'connected' && active !== 'chrome') clearStep();
     else if (active && pending) await start(active);
@@ -145,6 +152,34 @@ async function refresh() {
     loading = false;
   }
 }
+function checkConnections() {
+  if (!document.hidden && !$('#connections').hidden)
+    refresh().catch((err) => { $('#provider-health').textContent = err.message; });
+}
+function showSection(chats) {
+  $('#chats').hidden = !chats;
+  $('#connections').hidden = chats;
+  for (const [button, current] of [[$('#nav-chats'), chats], [$('#nav-connections'), !chats]]) {
+    if (current) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  }
+  $(chats ? '#chat-heading' : '#connections-title').focus({ preventScroll: true });
+  if (!chats) checkConnections();
+}
+$('#nav-chats').onclick = () => showSection(true);
+$('#nav-connections').onclick = () => showSection(false);
+
+// WebKit can resize only the visual viewport when the software keyboard opens.
+function fitWindow() {
+  const viewport = window.visualViewport;
+  if (!viewport || viewport.scale !== 1) return;
+  const style = document.documentElement.style;
+  if (viewport.height + 1 < window.innerHeight)
+    style.setProperty('--visible-height', viewport.height + 'px');
+  else style.removeProperty('--visible-height');
+}
+window.visualViewport?.addEventListener('resize', fitWindow);
+fitWindow();
 $('#close-view').onclick = closeDisplay;
 $('#skip').onclick = () =>
   busy($('#skip'), async () => {
@@ -178,21 +213,20 @@ $('#connect').onclick = () =>
   });
 try {
   const me = await api('/api/me');
-  $('#identity').textContent = me.email ?? 'Sign in to open your private workspace.';
+  $('#identity').textContent = me.email ?? '';
+  $('#entry-status').textContent = 'Sign in to see your chats and connections.';
+  $('#entry').hidden = !!me.email;
   $('#login').hidden = !!me.email;
   $('#workspace').hidden = !me.email;
   $('#logout').hidden = !me.email;
   if (me.email) {
     openChats(me.email);
-    $('#status').textContent = 'Preparing your private workspace…';
+    timer = setInterval(checkConnections, 5000);
     await api('/api/workspace', 'POST');
-    await refresh();
-    timer = setInterval(() => {
-      if (!document.hidden) refresh().catch(report);
-    }, 5000);
   }
 } catch (err) {
-  report(err);
+  if ($('#workspace').hidden) $('#entry-status').textContent = err.message;
+  else report(err);
 }
 window.addEventListener('pagehide', () => {
   clearInterval(timer);
