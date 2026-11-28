@@ -27,7 +27,7 @@ LOGIN_COMMANDS = {
     "claude": ["claude", "auth", "login", "--claudeai"],
     "antigravity": ["antigravity-login"],
 }
-READY_MARKER = "ready-antigravity-v1"
+READY_MARKER = "ready-chat-stream-v1"
 catalog_status = {}
 MAX_WORKSPACES = int(os.environ.get("MAX_WORKSPACES", "4"))
 LOCK = threading.RLock()
@@ -215,9 +215,12 @@ CHAT_WORKER = (ROOT / "codex-chat.cjs").read_text()
 THREAD_ID = re.compile(r"[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}")
 
 
-def chat_reply(ns, turn):
-    if not isinstance(turn, dict) or set(turn) != {"thread", "prompt"}:
+def chat_reply(ns, turn, on_delta):
+    if not isinstance(turn, dict) or set(turn) not in ({"thread", "prompt"}, {"thread", "prompt", "model"}):
         raise ValueError("Invalid chat turn.")
+    if "model" in turn and (not isinstance(turn["model"], str) or
+                            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}", turn["model"])):
+        raise ValueError("Invalid chat model.")
     thread, prompt = turn["thread"], turn["prompt"]
     if thread is not None and (not isinstance(thread, str) or not THREAD_ID.fullmatch(thread)):
         raise ValueError("Invalid chat thread.")
@@ -226,22 +229,51 @@ def chat_reply(ns, turn):
     if not provider_state(ns, "codex"):
         return {"status": "disconnected"}
     # User input is stdin data. Neither the executable nor its arguments come from the HTTP client.
-    proc = run(container(ns, "codex", "node", "-e", CHAT_WORKER, interactive=True),
-               data=json.dumps(turn), check=False, timeout=125)
-    if proc.returncode or len(proc.stdout.encode()) > 640 * 1024:
-        return {"status": "interrupted"}
-    return json.loads(proc.stdout)
+    cmd = container(ns, "codex", "node", "-e", CHAT_WORKER, interactive=True)
+    with subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL) as proc:
+        deadline = threading.Timer(125, proc.kill)
+        deadline.start()
+        try:
+            proc.stdin.write(json.dumps(turn).encode())
+            proc.stdin.close()
+            result = None
+            size = 0
+            while line := proc.stdout.readline(640 * 1024 + 1):
+                if len(line) > 640 * 1024 or not line.endswith(b"\n") or result is not None:
+                    raise ValueError("Invalid chat response.")
+                frame = json.loads(line)
+                if isinstance(frame, dict) and set(frame) == {"delta"} and isinstance(frame["delta"], str):
+                    size += len(frame["delta"].encode())
+                    if size > 98304:
+                        raise ValueError("Chat response too large.")
+                    on_delta(frame["delta"])
+                else:
+                    result = frame
+            if proc.wait() == 0 and isinstance(result, dict) and "status" in result:
+                return result
+            return {"status": "interrupted"}
+        finally:
+            deadline.cancel()
+            if proc.poll() is None:
+                proc.kill()
 
 
-def dispatch(ns, action, provider=None, code=None, turn=None):
+def dispatch(ns, action, provider=None, code=None, turn=None, on_delta=lambda _text: None):
     if not isinstance(ns, str) or not NAMESPACE.fullmatch(ns):
         raise ValueError("Invalid workspace.")
-    if action not in ("ensure", "status", "start", "code", "display", "chat") or (
+    if action not in ("ensure", "status", "start", "code", "display", "chat", "chat-models") or (
             action in ("start", "code") and provider not in (*DEPLOYMENTS, "chrome")):
         raise ValueError("Unknown workspace operation.")
     ready = allocation(ns, ensure=action == "ensure")
+    if action == "chat-models":
+        if not ready or not provider_state(ns, "codex"):
+            return {"models": [], "status": "disconnected" if ready else "capacity"}
+        process = run(container(ns, "codex", "node", "-e", CHAT_WORKER, interactive=True),
+                      data=json.dumps({"operation": "models"}))
+        return json.loads(process.stdout)
     if action == "chat":
-        return chat_reply(ns, turn) if ready else {"status": "capacity"}
+        return chat_reply(ns, turn, on_delta) if ready else {"status": "capacity"}
     if action == "ensure" or not ready:
         return {"ready": ready}
     if action == "display":
@@ -305,7 +337,11 @@ class Handler(socketserver.StreamRequestHandler):
             msg = json.loads(line)
             if msg.get("action") != "chat" and len(line) > 4096:
                 return
-            result = dispatch(msg.get("workspace"), msg.get("action"), msg.get("provider"), msg.get("code"), msg.get("turn"))
+            def delta(text):
+                self.wfile.write(json.dumps({"delta": text}, ensure_ascii=False).encode() + b"\n")
+
+            result = dispatch(msg.get("workspace"), msg.get("action"), msg.get("provider"),
+                              msg.get("code"), msg.get("turn"), on_delta=delta)
             if msg.get("action") == "display" and result is None:
                 self.wfile.write(b'{"display":true}\n')
                 subprocess.run(container(msg["workspace"], "chrome", "node", "-e", RFB, interactive=True),

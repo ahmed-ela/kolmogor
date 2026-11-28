@@ -17,6 +17,10 @@ const origin = 'http://127.0.0.1:' + port;
 const accounts = new Accounts(':memory:');
 const providers = { codex: 'disconnected', claude: 'disconnected', antigravity: 'disconnected', chrome: 'ready' };
 const starts = [];
+const firstChunk = Promise.withResolvers();
+const lastChunk = Promise.withResolvers();
+let sendCount = 0, push;
+
 const server = accountServer({
   origin,
   accounts,
@@ -31,6 +35,9 @@ const server = accountServer({
   },
   broker: {
     async call(_workspace, action, provider, code) {
+      if (action === 'chat-models') return {models:[
+        {id:'fixture-a', name:'Fixture A', isDefault:true}, {id:'fixture-b', name:'Fixture B', isDefault:false}
+      ]};
       if (action === 'ensure') return { ready: true };
       if (action === 'status') return { ready: true, providers };
       if (action === 'code') {
@@ -51,13 +58,22 @@ const server = accountServer({
         message: 'Approve the synthetic connection.',
       };
     },
-    async chat(_owner,{thread,prompt}) {
+    async chat(_owner,{thread,prompt,model}, onDelta) {
       const session = '10000000-0000-4000-8000-000000000003';
+      if (prompt === 'A streamed fixture') {
+        sendCount++;
+        push = onDelta;
+        onDelta('First part');
+        firstChunk.resolve();
+        await lastChunk.promise;
+        return {status:'completed',thread:session,model,reply:'First part and final.'};
+      }
       if (prompt === 'A long layout fixture')
-        return { status:'completed', thread:session, reply:'A readable paragraph on a narrow screen. '.repeat(240) };
+        return { status:'completed', thread:session, model, reply:'A readable paragraph on a narrow screen. '.repeat(240) };
       if (thread) assert.equal(thread,session);
       assert.equal(prompt,thread ? 'Recall it' : 'Remember the fixture');
-      return {status:'completed',thread:session,reply:thread ? 'I remember' : 'Stored'};
+      assert.equal(model,thread ? 'fixture-b' : 'fixture-a');
+      return {status:'completed',thread:session,model,reply:thread ? 'I remember' : 'Stored'};
     },
     async display() {
       return new Duplex({
@@ -126,16 +142,35 @@ try {
   await other.goto(origin);
   await other.getByRole('link',{name:'Sign in with Google'}).click();
   await other.getByRole('button',{name:'Remember the fixture'}).click();
+  await other.getByRole('combobox',{name:'Codex model'}).selectOption('fixture-b');
   await other.getByLabel('Message Codex').fill('Recall it');
   await other.getByRole('button',{name:'Send',exact:true}).click();
   await other.getByText('I remember',{exact:true}).waitFor();
   await page.reload();
   await page.getByText('I remember',{exact:true}).waitFor();
   await page.getByText('Stored',{exact:true}).waitFor();
+  await page.waitForFunction(() => document.querySelector('#chat-model').value === 'fixture-b');
+  assert.deepEqual(await page.locator('.agent-message strong').allTextContents(),['fixture-a','fixture-b']);
   await page.getByRole('button',{name:'All chats'}).click();
   await page.getByRole('button',{name:'Remember the fixture'}).waitFor();
   assert.equal(await page.locator('#chat-list button').count(),1);
   await other.close();
+  await newChat.click();
+  await input.fill('A streamed fixture');
+  await send.click();
+  await firstChunk.promise;
+  const partial = page.locator('#live-reply div');
+  await partial.filter({hasText:/^First part$/}).waitFor();
+  assert.equal(await page.getByRole('status').filter({hasText:'Codex is replying'}).count(),1);
+  await page.reload();
+  await partial.filter({hasText:/^First part$/}).waitFor();
+  push(' and final.');
+  await partial.filter({hasText:/^First part and final\.$/}).waitFor();
+  lastChunk.resolve();
+  await page.locator('.agent-message:not(#live-reply) div').filter({hasText:/^First part and final\.$/}).waitFor();
+  assert.equal(sendCount,1);
+  await back.click();
+  console.log('Verified a real SSE preview before completion, reload and snapshot, a new delta and exactly one final reply.');
   console.log('Verified fresh workspace, two independent signed-in clients, both turns on one chat and reload.');
   await newChat.click();
   await input.fill('A long layout fixture');
@@ -145,6 +180,7 @@ try {
   for (const viewport of [{width:320,height:360},{width:740,height:290},{width:1024,height:720}]) {
     await page.setViewportSize(viewport);
     await fits(back);
+    await fits(page.getByLabel('Codex model'));
     await fits(send);
     const transcript = page.locator('#conversation');
     await transcript.evaluate(el=>{ el.scrollTop=0; });

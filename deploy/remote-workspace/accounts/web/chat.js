@@ -45,9 +45,92 @@ export function openChats(account) {
     timer;
 
   const drafts = new Map();
+  const choices = new Map();
+  const picker = $('chat-model');
+  let catalog = [], loadingModels, catalogError = '', storedModel, historyReady = false;
+  function renderPicker() {
+    const choice = choices.get(selected) || storedModel || catalog.find((m) => m.isDefault)?.id || catalog[0]?.id;
+    const options = catalog.map(({name,id}) => new Option(name, id));
+    if (!options.length) options.push(new Option(catalogError || 'Loading models…', ''));
+    else if (choice && !catalog.some((m) => m.id === choice))
+      options.unshift(new Option(choice + ' (unavailable)', ''));
+    picker.replaceChildren(...options);
+    picker.value = catalog.some((m) => m.id === choice) ? choice : '';
+    controls();
+  }
+  async function loadModels() {
+    if (loadingModels) return loadingModels;
+    catalogError = '';
+    loadingModels = api('/models').then((result) => {
+      catalog = result.models || [];
+      if (!catalog.length) catalogError = result.status === 'disconnected' ? 'Connect Codex in Connections' : 'No models available';
+    }).catch(() => {
+      catalog = [];
+      catalogError = 'Models unavailable';
+    }).finally(() => {
+      loadingModels = undefined;
+      renderPicker();
+    });
+    renderPicker();
+    return loadingModels;
+  }
+  picker.onchange = () => {
+    choices.set(selected, picker.value);
+    controls();
+  };
+  $('retry-models').onclick = loadModels;
   const input = $('chat-input');
   const scroller = $('conversation');
   let followReply = true;
+  let source, streamRequest, paint, preview = '';
+
+  function closeStream() {
+    cancelAnimationFrame(paint);
+    paint = undefined;
+    source?.close();
+    source = undefined;
+    streamRequest = undefined;
+    preview = '';
+  }
+
+  function showPreview() {
+    paint = undefined;
+    const line = $('live-reply');
+    if (!line) return;
+    const atEnd = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 48;
+    line.hidden = !preview;
+    line.lastElementChild.textContent = preview;
+    if (atEnd) scroller.scrollTop = scroller.scrollHeight;
+  }
+
+  function watchReply(request) {
+    if (request && streamRequest === request) return;
+    closeStream();
+    if (!request || document.hidden) return;
+    const events = new EventSource('/api/chats/' + selected + '/turns/' + request + '/events');
+    streamRequest = request;
+    source = events;
+    for (const type of ['snapshot', 'delta']) {
+      events.addEventListener(type, (event) => {
+        if (source !== events) return;
+        const text = JSON.parse(event.data);
+        preview = type === 'snapshot' ? text : preview + text;
+        paint ??= requestAnimationFrame(showPreview);
+      });
+    }
+    events.addEventListener('settled', () => {
+      if (source !== events) return;
+      closeStream();
+      void refresh();
+    });
+    events.onerror = () => {
+      if (source !== events) return;
+      if (events.readyState === EventSource.CLOSED) closeStream();
+      // The scheduled read rechecks authorization and history. A rejected subscription
+      // must not immediately create another one; EventSource retries transient disconnects.
+      schedule();
+    };
+  }
 
   function sizeInput() {
     input.style.height = 'auto';
@@ -64,7 +147,10 @@ export function openChats(account) {
     $('draft-greeting').hidden = selected !== '';
     $('workspace').toggleAttribute('data-thread', visible);
     $('destinations').hidden = visible;
-    $('chat-send').disabled = sending || working || !$('chat-input').value.trim();
+    picker.hidden = !visible;
+    picker.disabled = !historyReady || !catalog.length || sending || working || Boolean(retry && retry.prompt === input.value);
+    $('retry-models').hidden = !visible || !catalogError;
+    $('chat-send').disabled = sending || working || !historyReady || !picker.value || !$('chat-input').value.trim();
     input.readOnly = sending;
     $('new-chat').disabled = sending || selected === '';
     $('all-chats').disabled = sending;
@@ -76,7 +162,10 @@ export function openChats(account) {
       else drafts.delete(selected);
     }
     generation++;
+    closeStream();
     selected = id;
+    storedModel = undefined;
+    historyReady = id === '';
     if (id) localStorage.setItem(key, id);
     else localStorage.removeItem(key);
     next = null;
@@ -95,7 +184,8 @@ export function openChats(account) {
     $('more-chats').hidden = true;
     $('older-turns').hidden = true;
     $('chat-empty').hidden = true;
-    controls();
+    renderPicker();
+    if (id !== null) void loadModels();
     if (id !== null) sizeInput();
     if (id === '') {
       input.focus();
@@ -133,20 +223,31 @@ export function openChats(account) {
     const jumpToEnd = followReply || atEnd;
     const turns = [...rows.values()].sort((a, b) => a.seq - b.seq);
     const messages = [];
-    const line = (role, text) => {
+    const line = (role, text, modelLabel) => {
       const li = document.createElement('li'),
         who = document.createElement('strong'),
         content = document.createElement('div');
       li.className = role === 'You' ? 'user-message' : 'agent-message';
       if (role === 'Codex') who.append(icon('brand'));
-      who.append(role);
+      who.append(modelLabel || role);
       content.textContent = text;
       li.append(who, content);
       messages.push(li);
+      return li;
     };
     for (const turn of turns) {
       line('You', turn.prompt);
-      if (turn.state === 'completed') line('Codex', turn.reply);
+      if (turn.state === 'completed') {
+        const label = turn.model && (turn.requestedModel && turn.requestedModel !== turn.model
+          ? turn.model + ' (requested ' + turn.requestedModel + ')' : turn.model);
+        line('Codex', turn.reply, label);
+      }
+      if (turn.state === 'working') {
+        const text = streamRequest === turn.request ? preview : '';
+        const live = line('Codex', text);
+        live.id = 'live-reply';
+        live.hidden = !text;
+      }
       if (turn.error) line('Workspace', turn.error);
     }
     working = turns.at(-1)?.state === 'working';
@@ -189,8 +290,17 @@ export function openChats(account) {
         cache.set(id, row);
       }
       if (selected) {
+        const latestTurn = incoming.at(-1);
+        const currentModel = !older && latestTurn?.state === 'working' ? latestTurn.requestedModel || page.model : page.model;
+        if (!historyReady || (!older && storedModel !== currentModel)) {
+          storedModel = currentModel;
+          historyReady = true;
+          renderPicker();
+        }
         $('chat-heading').textContent = page.title;
         if (changed || followReply) renderTurns(older);
+        const latest = working && [...rows.values()].find((row) => row.state === 'working');
+        watchReply(latest?.request);
       } else {
         if (changed || !cache.size) renderList();
         $('chat-status').textContent = '';
@@ -217,8 +327,8 @@ export function openChats(account) {
   $('chat-form').onsubmit = async (event) => {
     event.preventDefault();
     const prompt = $('chat-input').value;
-    if (working || sending || !prompt.trim()) return;
-    if (!retry || retry.prompt !== prompt) retry = { prompt, request: crypto.randomUUID() };
+    if ($('chat-send').disabled) return;
+    if (!retry || retry.prompt !== prompt) retry = { prompt, model: picker.value, request: crypto.randomUUID() };
     generation++;
     busyRead = false;
     sending = true;
@@ -228,6 +338,8 @@ export function openChats(account) {
       const result = await api(selected ? '/' + selected : '', retry);
       const same = selected === result.id;
       drafts.delete(selected);
+      choices.delete(selected);
+      storedModel = retry.model;
       followReply = true;
       selected = result.id;
       localStorage.setItem(key, selected);
@@ -238,6 +350,7 @@ export function openChats(account) {
       working = true;
       $('chat-status').textContent = 'Codex is replying…';
     } catch (err) {
+      if (err.status >= 400 && err.status < 500) retry = undefined;
       $('chat-status').textContent = err.message;
       return;
     } finally {
@@ -250,7 +363,7 @@ export function openChats(account) {
   const saved = localStorage.getItem(key);
   select(saved && /^[0-9a-f-]{36}$/.test(saved) ? saved : null);
   async function poll() {
-    if (!document.hidden) await refresh();
+    if (!document.hidden && source?.readyState !== EventSource.OPEN) await refresh();
     schedule();
   }
   function schedule() {
@@ -259,7 +372,14 @@ export function openChats(account) {
   }
   schedule();
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) void refresh();
+    if (document.hidden) closeStream();
+    else void refresh();
   });
-  window.addEventListener('pagehide', () => clearTimeout(timer), { once: true });
+  window.addEventListener('pagehide', () => {
+    clearTimeout(timer);
+    closeStream();
+  });
+  window.addEventListener('pageshow', (event) => {
+    if (event.persisted) { void refresh(); schedule(); }
+  });
 }
