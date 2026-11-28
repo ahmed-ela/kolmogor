@@ -363,6 +363,9 @@ function websiteChatPickerState() {
     if (lines.length < 1 || lines.length > 2 || lines.length === 2
       && !/^Leaving on [A-Z][a-z]+ [0-9]{1,2}$/.test(lines[1])) return null;
     const label = lines[0];
+    // The website offers Latest alongside numbered families. It is a real
+    // radio row, but never a verified version or an offered concrete model.
+    if (label === 'Latest' && lines.length === 1) return { key: label, label };
     if (label.length > 128 || !/^GPT-[0-9]+(?:\.[0-9]+)*(?: [A-Za-z][A-Za-z0-9-]*)?$/.test(label)) return null;
     return { key: label, label };
   };
@@ -1715,7 +1718,7 @@ function websiteModelFamilyLabel(provider, value) {
 function websiteModelSafeTriggerLabel(value) {
   const label = websiteModelNormalize(value);
   if (!label || label.length > 160 || /[\u0000-\u001F\u007F]/.test(label)) return null;
-  if (label === 'Select ChatGPT model') return label;
+  if (label === 'Select ChatGPT model' || label === 'Open mode picker, currently Auto') return label;
   if (/^Open mode picker, currently (?:Gemini )?(?:(?:[0-9]+(?:\.[0-9]+)? )?(?:Pro|Flash|Flash-Lite|Argon|Hydrogen|Carbon))$/.test(label)) return label;
   if (/^Model: (?:Sonnet|Haiku|Opus|Fable) [0-9]+(?:\.[0-9]+)?(?: (?:Low|Medium|High|Extra|Extended|Max))?$/.test(label)) return label;
   return null;
@@ -1732,7 +1735,7 @@ function websiteModelPickerState(provider) {
   const isTrigger = node => {
     const label = websiteModelSafeTriggerLabel(node.getAttribute('aria-label')) || '';
     return provider === 'chatgpt' ? label === 'Select ChatGPT model'
-      : provider === 'gemini' ? /^Open mode picker, currently (?:Gemini )?(?:[0-9]+(?:\.[0-9]+)? )?(?:Pro|Flash|Flash-Lite|Argon|Hydrogen|Carbon)$/.test(label)
+      : provider === 'gemini' ? label.startsWith('Open mode picker, currently ')
         : /^Model: (?:Sonnet|Haiku|Opus|Fable) [0-9]+(?:\.[0-9]+)?(?: (?:Low|Medium|High|Extra|Extended|Max))?$/.test(label);
   };
   const triggerScan = nodes('button[aria-label], [role="button"][aria-label]');
@@ -1749,6 +1752,7 @@ function websiteModelPickerState(provider) {
   });
   const topMenus = trigger ? associated(trigger) : [];
   const topMenu = topMenus.length === 1 ? topMenus[0] : null;
+  const geminiAuto = provider === 'gemini' && trigger?.getAttribute('aria-label') === 'Open mode picker, currently Auto';
   const named = (node, value) => {
     if (provider === 'chatgpt') return websiteModelNormalize(node.getAttribute('aria-label') || node.innerText || node.textContent) === value;
     const aria = websiteModelNormalize(node.getAttribute('aria-label'));
@@ -1828,6 +1832,9 @@ function websiteModelPickerState(provider) {
       // Keep unknown selected rows subject to the ambiguity checks below.
       if (provider === 'gemini' && !choice && option.getAttribute('role') === 'menuitem'
           && ['Low', 'High'].some(label => named(option, label))) continue;
+      // Auto opens the family picker but never proves an explicit model. Any named
+      // selection reported while the trigger still says Auto is contradictory.
+      if (geminiAuto && !choice && option.getAttribute('role') === 'menuitem' && named(option, 'Auto')) continue;
       let indicatorSelected = false;
       if (provider === 'gemini' && option.getAttribute('role') === 'menuitem') {
         const markers = [...option.querySelectorAll('[aria-label="Selected"]')].slice(0, 128)
@@ -1847,7 +1854,7 @@ function websiteModelPickerState(provider) {
       ? control.node.getAttribute('aria-selected') === 'true' : control.node.getAttribute('aria-checked') === 'true');
   const header = trigger && visible(trigger) ? family(trigger) : null;
   const menuSelected = checked.length === 1 ? checked[0].choice : null;
-  const conflicting = !!header && !!menuSelected && !websiteModelChoiceEqual(header, menuSelected);
+  const conflicting = geminiAuto ? !!header || !!menuSelected : !!header && !!menuSelected && !websiteModelChoiceEqual(header, menuSelected);
   const selectionAmbiguous = checked.length > 1;
   const selected = !duplicate && !conflicting && !indicatorInvalid && !selectionAmbiguous
     ? menuSelected || (!indicatorScope ? header : null) : null;
@@ -1856,6 +1863,19 @@ function websiteModelPickerState(provider) {
   return { provider, trigger, triggerCount: triggers.length, triggerCandidates, topMenu, secondary, nestedMenu, menus, allMenus, physicalMenus, choices: duplicate ? [] : choices,
     controls: duplicate ? [] : controls, selected, evidence, duplicate, conflicting, indicatorInvalid, selectionAmbiguous,
     navigationAmbiguous: secondaries.length > 1, physical, visible, enabled, family, triggerScan, outside };
+}
+// Gemini can open a periodic-table picker from the same model button. Its
+// element tiles do not establish a versioned model. Switch only its scoped
+// view control, then require the ordinary associated menu and checked row.
+function websiteGeminiCompactControl(state) {
+  if (state.provider !== 'gemini') return null;
+  const grids = [...document.querySelectorAll('compact-periodic-picker')].filter(state.visible);
+  if (grids.length !== 1 || !state.outside(grids[0])) return null;
+  const grid = grids[0], popover = grid.closest('.periodic-compact'), pane = grid.closest('.cdk-overlay-pane');
+  if (!pane || !popover || !pane.contains(popover) || !popover.classList.contains('popover-menu')
+    || popover.getAttribute('data-test-id') === null) return null;
+  const buttons = [...grid.querySelectorAll('button')].filter(node => node.classList.contains('list-view-btn'));
+  return buttons.length === 1 && state.enabled(buttons[0]) && state.outside(buttons[0]) ? buttons[0] : null;
 }
 function websiteClaudeRememberModelTrigger(provider, trigger, owner, url) {
   if (provider !== 'claude') return;
@@ -2557,9 +2577,26 @@ async function websiteModelReadEvidence(provider, expected, openingRecovery = nu
           return failure('model_unverified');
         primaryOpened = true;
         readStage = 'primary_open_requested';
+        const mayOpenCompact = provider === 'gemini' && !document.querySelectorAll('compact-periodic-picker').length;
         trigger.click();
-        const acknowledged = await websiteModelWaitForChange(recovery ? Math.min(until, Date.now() + 900) : until,
-          () => !unchanged() || !!websiteModelPickerState(provider).topMenu);
+        const pickerMounted = () => {
+          if (!unchanged()) return true;
+          const current = websiteModelPickerState(provider);
+          return !!current.topMenu || mayOpenCompact && !!websiteGeminiCompactControl(current);
+        };
+        let acknowledged = await websiteModelWaitForChange(recovery ? Math.min(until, Date.now() + 900) : until, pickerMounted);
+        if (acknowledged && mayOpenCompact && unchanged()) {
+          const current = websiteModelPickerState(provider), list = websiteGeminiCompactControl(current);
+          if (list && !current.topMenu) {
+            if (current.trigger !== trigger || current.triggerCount !== 1 || current.triggerCandidates.length !== 1
+              || !current.enabled(trigger) || trigger.getAttribute('aria-expanded') !== 'true'
+              || current.physicalMenus.length || current.duplicate || current.conflicting || current.indicatorInvalid)
+              return failure('model_unverified');
+            readStage = 'compact_list_requested';
+            list.click();
+            acknowledged = await websiteModelWaitForChange(until, () => !unchanged() || !!websiteModelPickerState(provider).topMenu);
+          }
+        }
         if (!acknowledged) {
           const current = websiteModelPickerState(provider);
           if (recovery && unchanged() && Date.now() < until && current.evidence) continue;
