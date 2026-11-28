@@ -9,7 +9,7 @@ import { accountServer } from '../server.mjs';
 
 const origin = 'https://accounts.example.invalid',
   host = new URL(origin).host;
-async function fixture(t) {
+async function fixture(t, chatWorker) {
   const accounts = new Accounts(':memory:'),
     calls = [];
   const server = accountServer({
@@ -30,7 +30,8 @@ async function fixture(t) {
         calls.push(args);
         return { ready: true };
       },
-      async chat(owner, turn) {
+      async chat(owner, turn, delta) {
+        if (chatWorker) return chatWorker(owner, turn, delta);
         calls.push([owner, 'chat', turn]);
         return {status:'completed', thread:turn.thread || '10000000-0000-4000-8000-000000000001', reply:'hello'};
       },
@@ -205,4 +206,37 @@ test('private chat HTTP routes enforce the owner and origin before dispatching',
   assert.equal((await request(path,{headers:{cookie:alice}})).status,200);
   assert.equal(JSON.parse((await request('/api/chats',{headers:{cookie:bob}})).body).chats.length,0);
   assert.equal(calls.length,1);
+});
+
+test('only the owner can subscribe to a turn and sign-out stops further preview delivery', async (t) => {
+  const finish = Promise.withResolvers();
+  let append;
+  const {request,sign,session,port} = await fixture(t, async (_owner, _turn, onDelta) => {
+    append = onDelta;
+    append('already generated');
+    await finish.promise;
+    return {status:'interrupted'};
+  });
+  const alice = session(await sign('alice')), bob = session(await sign('bob'));
+  const key = crypto.randomUUID();
+  const receipt = await request('/api/chats',{method:'POST',headers:{cookie:alice,origin,'content-type':'application/json'},data:JSON.stringify({request:key,prompt:'Hi'})});
+  const path = '/api/chats/'+JSON.parse(receipt.body).id+'/turns/'+key+'/events';
+  assert.equal((await request(path,{headers:{cookie:bob}})).status,404);
+  assert.equal((await request(path)).status,401);
+  const stream = await new Promise((resolve,reject) => http.get(
+    {host:'127.0.0.1',port,path,headers:{host,cookie:alice}},resolve).on('error',reject));
+  const first = await once(stream,'data');
+  assert.match(first[0].toString(),/event: snapshot/);
+  assert.match(first[0].toString(),/already generated/);
+  const next = once(stream,'data');
+  append(' live text');
+  assert.match((await next)[0].toString(),/event: delta/);
+  await request('/auth/logout',{method:'POST',headers:{origin,cookie:alice}});
+  let leaked = '';
+  stream.on('data', chunk => { leaked += chunk; });
+  const ended = once(stream,'end');
+  append('private post-logout output');
+  await ended;
+  assert.equal(leaked,'');
+  finish.resolve();
 });

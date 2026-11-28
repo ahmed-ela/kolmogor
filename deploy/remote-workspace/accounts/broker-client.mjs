@@ -14,7 +14,7 @@ export class WorkspaceError extends Error {
 }
 
 export function workspaceBroker(path) {
-  function request(workspace, action, provider, code, turn) {
+  function request(workspace, action, provider, code, turn, onDelta) {
     const socket = connect(path);
     socket.on('connect', () =>
       socket.write(JSON.stringify({ workspace, action, provider, code, turn }) + '\n')
@@ -36,24 +36,36 @@ export function workspaceBroker(path) {
       };
       function read(chunk) {
         response = Buffer.concat([response, chunk]);
-        const newline = response.indexOf(10);
-        if (newline < 0 && response.length <= maxBytes) return;
-        finish();
         try {
-          if (newline < 0 || newline > maxBytes) throw Error('Invalid broker response');
-          const data = JSON.parse(response.subarray(0, newline).toString());
+          let newline;
+          let data;
+          while ((newline = response.indexOf(10)) >= 0) {
+            if (newline > maxBytes) throw Error('Invalid broker response');
+            data = JSON.parse(response.subarray(0, newline).toString());
+            response = response.subarray(newline + 1);
+            if (action !== 'chat' || !Object.hasOwn(data, 'delta')) break;
+            if (typeof data.delta !== 'string') throw Error('Invalid chat delta');
+            onDelta(data.delta);
+            data = undefined;
+          }
+          if (data === undefined) {
+            if (response.length > maxBytes) throw Error('Invalid broker response');
+            return;
+          }
+          finish();
           if (publicErrors.has(data.error)) throw new WorkspaceError(data.error);
           if (data.error) throw Error('Workspace operation failed');
           if (action === 'display') {
             if (data.display !== true) throw Error('Display unavailable');
             socket.pause();
-            if (response.length > newline + 1) socket.unshift(response.subarray(newline + 1));
+            if (response.length) socket.unshift(response);
             resolve(socket);
           } else {
             socket.end();
             resolve(data);
           }
         } catch (err) {
+          finish();
           socket.destroy();
           reject(err);
         }
@@ -63,5 +75,5 @@ export function workspaceBroker(path) {
       socket.on('data', read);
     });
   }
-  return { call: request, chat: (workspace, turn) => request(workspace, 'chat', undefined, undefined, turn), display: (workspace) => request(workspace, 'display') };
+  return { call: request, chat: (workspace, turn, onDelta) => request(workspace, 'chat', undefined, undefined, turn, onDelta), display: (workspace) => request(workspace, 'display') };
 }

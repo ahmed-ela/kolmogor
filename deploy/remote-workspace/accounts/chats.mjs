@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 
+import { LiveReply, serveReply } from './reply-stream.mjs';
+
 export const chatID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const pageSize = 30;
 
@@ -15,6 +17,7 @@ export class WorkspaceChats {
   constructor(db, run) {
     this.db = db;
     this.run = run;
+    this.live = new Map();
     db.exec(`
       CREATE TABLE IF NOT EXISTS workspace_chats (
         id TEXT PRIMARY KEY, owner TEXT NOT NULL, title TEXT NOT NULL, provider_thread TEXT,
@@ -126,9 +129,11 @@ export class WorkspaceChats {
   }
 
   async finish(owner, chat, request, prompt) {
+    const live = new LiveReply();
+    this.live.set(chat.id, live);
     let result;
     try {
-      result = await this.run(owner, { thread: chat.provider_thread, prompt });
+      result = await this.run(owner, { thread: chat.provider_thread, prompt }, (delta) => live.append(delta));
     } catch {
       result = null;
     }
@@ -171,11 +176,24 @@ export class WorkspaceChats {
     } catch (err) {
       this.db.exec('ROLLBACK');
       throw err;
+    } finally {
+      this.live.delete(chat.id);
+      live.finish();
     }
+  }
+
+  stream(owner, chat, request) {
+    const turn = this.db.prepare('SELECT state FROM workspace_turns WHERE owner=? AND chat=? AND request=?')
+      .get(owner, chat, request);
+    if (!turn) throw new ChatError(404, 'Chat turn not found.');
+    return turn.state === 'working' ? this.live.get(chat) : null;
   }
 }
 
-export async function chatRoute({ chats, workspace, req, url, json }) {
+export async function chatRoute({ chats, workspace, req, res, url, json, authorized }) {
+  const stream = /^\/api\/chats\/([a-f0-9-]+)\/turns\/([a-f0-9-]+)\/events$/.exec(url.pathname);
+  if (req.method === 'GET' && stream && chatID.test(stream[1]) && chatID.test(stream[2]))
+    return serveReply(res, chats.stream(workspace, stream[1], stream[2]), authorized);
   const match = /^\/api\/chats(?:\/([a-f0-9-]+))?$/.exec(url.pathname);
   if (!match || (match[1] && !chatID.test(match[1]))) throw new ChatError(404, 'Chat not found.');
   const id = match[1] || null;

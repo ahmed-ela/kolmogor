@@ -18,6 +18,10 @@ The **Chats** section in the iOS workspace and the Mac **Manage account** window
 
 U01 runs one account service and one private SQLite database in WAL mode on durable node storage. The `workspace_chats` and `workspace_turns` tables use the server-derived workspace identity. Reads, pagination, and continuation check ownership. Store the chat title, prompts, replies, send receipts and provider-thread binding there. The pilot uses the connected Codex CLI in the user's isolated worker. Its own PVC holds the provider's credentials and continuation state. Keep backing up both the SQLite file using an online SQLite backup and the workspace PVC. Stopping a phone or refreshing the page does not cancel an accepted turn.
 
+The workspace streams Codex's answer text from its private app-server transport. The worker accepts answer deltas only for the acknowledged thread, turn and final-answer item. A signed-in client can subscribe to its own active turn over Server-Sent Events. Reconnecting starts with a snapshot of the current preview and continues the same job. The account service commits the final reply to SQLite after the worker confirms completion. Interrupted previews are discarded.
+
+When upgrading an existing workspace, apply the updated Codex pod manifest before starting the new broker. The CLI pod mounts the same account and session volume at an additional path with read-only empty configuration and rules for chat inference. Its normal interactive configuration remains available at the original path.
+
 The broker exposes a fixed chat operation. The phone can supply message text and a request ID. Only the service chooses the provider thread and only the broker chooses the executable and pod. A retry with the same request ID returns the original receipt. An interrupted service records an unconfirmed send and never automatically resubmits it. The pilot runs a single account-service writer. Moving to multiple account-service replicas requires coordinated dispatch/recovery and shared storage.
 
 ## Install on the workspace node

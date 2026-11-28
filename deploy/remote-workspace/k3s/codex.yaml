@@ -29,6 +29,8 @@ spec:
       - name: codex-state
         persistentVolumeClaim:
           claimName: codex-state
+      - name: chat-policy
+        emptyDir: {}
       - name: cli-socket
         persistentVolumeClaim:
           claimName: cli-socket
@@ -39,9 +41,15 @@ spec:
       - name: socket-directory
         image: localhost/kolmogor-agent:workspace-v2
         imagePullPolicy: Never
-        command: [install, -d, -m, '0700', /ipc/private]
+        command: ["/bin/sh", "-ec"]
+        args:
+        - |
+          install -d -m 0700 /ipc/private /policy/rules /policy/workspace
+          touch /policy/config.toml
         securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
-        volumeMounts: [{name: cli-socket, mountPath: /ipc}]
+        volumeMounts:
+        - {name: cli-socket, mountPath: /ipc}
+        - {name: chat-policy, mountPath: /policy}
       containers:
       - name: cli
         command: ["/bin/sh", "-ec"]
@@ -60,6 +68,12 @@ spec:
           mountPath: /workspace
         - name: codex-state
           mountPath: /home/node/.codex
+        # Same account and resumable sessions. The chat view masks user configuration
+        # and rules and uses an empty project, without changing the interactive CLI.
+        - {name: codex-state, mountPath: /opt/kolmogor-chat/home}
+        - {name: chat-policy, subPath: config.toml, mountPath: /opt/kolmogor-chat/home/config.toml, readOnly: true}
+        - {name: chat-policy, subPath: rules, mountPath: /opt/kolmogor-chat/home/rules, readOnly: true}
+        - {name: chat-policy, subPath: workspace, mountPath: /opt/kolmogor-chat/workspace, readOnly: true}
         - name: cli-socket
           mountPath: /tmp/codex-daemon-1000
           subPath: private

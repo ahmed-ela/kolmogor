@@ -48,6 +48,55 @@ export function openChats(account) {
   const input = $('chat-input');
   const scroller = $('conversation');
   let followReply = true;
+  let source, streamRequest, paint, preview = '';
+
+  function closeStream() {
+    cancelAnimationFrame(paint);
+    paint = undefined;
+    source?.close();
+    source = undefined;
+    streamRequest = undefined;
+    preview = '';
+  }
+
+  function showPreview() {
+    paint = undefined;
+    const line = $('live-reply');
+    if (!line) return;
+    const atEnd = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 48;
+    line.hidden = !preview;
+    line.lastElementChild.textContent = preview;
+    if (atEnd) scroller.scrollTop = scroller.scrollHeight;
+  }
+
+  function watchReply(request) {
+    if (request && streamRequest === request) return;
+    closeStream();
+    if (!request || document.hidden) return;
+    const events = new EventSource('/api/chats/' + selected + '/turns/' + request + '/events');
+    streamRequest = request;
+    source = events;
+    for (const type of ['snapshot', 'delta']) {
+      events.addEventListener(type, (event) => {
+        if (source !== events) return;
+        const text = JSON.parse(event.data);
+        preview = type === 'snapshot' ? text : preview + text;
+        paint ??= requestAnimationFrame(showPreview);
+      });
+    }
+    events.addEventListener('settled', () => {
+      if (source !== events) return;
+      closeStream();
+      void refresh();
+    });
+    events.onerror = () => {
+      if (source !== events) return;
+      if (events.readyState === EventSource.CLOSED) closeStream();
+      // The scheduled read rechecks authorization and history. A rejected subscription
+      // must not immediately create another one; EventSource retries transient disconnects.
+      schedule();
+    };
+  }
 
   function sizeInput() {
     input.style.height = 'auto';
@@ -76,6 +125,7 @@ export function openChats(account) {
       else drafts.delete(selected);
     }
     generation++;
+    closeStream();
     selected = id;
     if (id) localStorage.setItem(key, id);
     else localStorage.removeItem(key);
@@ -143,10 +193,17 @@ export function openChats(account) {
       content.textContent = text;
       li.append(who, content);
       messages.push(li);
+      return li;
     };
     for (const turn of turns) {
       line('You', turn.prompt);
       if (turn.state === 'completed') line('Codex', turn.reply);
+      if (turn.state === 'working') {
+        const text = streamRequest === turn.request ? preview : '';
+        const live = line('Codex', text);
+        live.id = 'live-reply';
+        live.hidden = !text;
+      }
       if (turn.error) line('Workspace', turn.error);
     }
     working = turns.at(-1)?.state === 'working';
@@ -191,6 +248,8 @@ export function openChats(account) {
       if (selected) {
         $('chat-heading').textContent = page.title;
         if (changed || followReply) renderTurns(older);
+        const latest = working && [...rows.values()].find((row) => row.state === 'working');
+        watchReply(latest?.request);
       } else {
         if (changed || !cache.size) renderList();
         $('chat-status').textContent = '';
@@ -250,7 +309,7 @@ export function openChats(account) {
   const saved = localStorage.getItem(key);
   select(saved && /^[0-9a-f-]{36}$/.test(saved) ? saved : null);
   async function poll() {
-    if (!document.hidden) await refresh();
+    if (!document.hidden && source?.readyState !== EventSource.OPEN) await refresh();
     schedule();
   }
   function schedule() {
@@ -259,7 +318,14 @@ export function openChats(account) {
   }
   schedule();
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) void refresh();
+    if (document.hidden) closeStream();
+    else void refresh();
   });
-  window.addEventListener('pagehide', () => clearTimeout(timer), { once: true });
+  window.addEventListener('pagehide', () => {
+    clearTimeout(timer);
+    closeStream();
+  });
+  window.addEventListener('pageshow', (event) => {
+    if (event.persisted) { void refresh(); schedule(); }
+  });
 }
