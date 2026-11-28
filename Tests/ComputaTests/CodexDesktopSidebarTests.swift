@@ -157,6 +157,81 @@ final class CodexDesktopSidebarTests: XCTestCase {
         }
     }
 
+    func testImportsStayInSidebarWhileSelectingSearchingAndReopeningOffline() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cli = root.appendingPathComponent("codex")
+        let fixture = #"""
+        #!/usr/bin/python3
+        import json, sys
+        titles = ["One", "Two"]
+        rows = [{"id": f"00000000-0000-4000-8000-{n:012d}", "name": title, "preview": "", "updatedAt": n}
+                for n, title in enumerate(titles, 1)]
+        for line in sys.stdin:
+            msg = json.loads(line)
+            if "id" not in msg: continue
+            method, params = msg["method"], msg.get("params", {})
+            if method == "initialize":
+                result = {"userAgent": "codex/1.0.0"}
+            elif method == "account/read":
+                result = {"userId": "fixture", "workspaceRouting": {"chatgptAccountId": "fixture"},
+                          "account": {"type": "chatgpt"}}
+            elif method in ["model/list", "threadSection/list", "thread/attachment/list"]:
+                result = {"data": []}
+            elif method == "thread/list":
+                result = {"data": [r for r in rows if r["id"] in params.get("includedThreadIds", [r["id"]])]}
+            elif method == "thread/read":
+                result = {"thread": {"id": params["threadId"], "updatedAt": 1, "status": {"type":"idle"}}}
+            elif method == "configRequirements/read":
+                result = {}
+            elif method == "thread/items/list":
+                row = next(r for r in rows if r["id"] == params["threadId"])
+                result = {"data": [{"turnId":"turn", "item":{"id":"reply", "type":"agentMessage", "text":"Reply " + row["name"]}}]}
+            else:
+                raise ValueError(method)
+            print(json.dumps({"id":msg["id"], "result": result}), flush=True)
+        """#
+        try Data(fixture.utf8).write(to: cli)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: cli.path)
+        let prefs = isolatedTestPreferences()
+        let copies = root.appendingPathComponent("copies")
+        let source = try XCTUnwrap(CodexSidebarSync.installed(preferences: prefs, candidates: [cli], home: root, profile: root, directory: copies))
+        let view = try await chatWindow(source, preferences: prefs)
+        func control(_ label: String) -> String { "document.querySelector('[aria-label=\"\(label)\"]')" }
+        func click(_ label: String) async throws {
+            let button = control(label)
+            try await waitFor("!!\(button) && !\(button).disabled", in: view)
+            _ = try await view.evaluateJavaScript(button + ".click()")
+        }
+        let saved = control("Saved imported chats"), sources = control("Available Codex chats")
+        let body = control("Imported conversation")
+        try await click("Imported chats")
+        try await click("Import from Codex")
+        try await click("Import One")
+        try await waitFor("\(body)?.textContent.includes('Reply One') && !!\(control("Import Two"))", in: view)
+        try await click("Import Two")
+        try await waitFor("\(body)?.textContent.includes('Reply Two') && \(saved)?.querySelectorAll('[data-desktop-chat]').length === 2", in: view)
+        _ = try await view.evaluateJavaScript("""
+            (() => {const field = \(control("Search Codex chats")); field.value = 'One';
+            field.dispatchEvent(new Event('input', {bubbles:true}));})()
+            """)
+        try await waitFor("\(sources)?.querySelectorAll('[data-desktop-chat]').length === 1 && \(saved)?.querySelectorAll('[data-desktop-chat]').length === 2", in: view)
+        try await click("One")
+        try await waitFor("\(body)?.textContent.includes('Reply One') && \(control("Search Codex chats"))?.value === 'One'", in: view)
+        try await click("Close Codex picker")
+        try await waitFor("!\(sources) && !!\(control("Two"))", in: view)
+        view.window?.close()
+
+        let offline = try XCTUnwrap(CodexSidebarSync.installed(preferences: prefs, candidates: [], directory: copies))
+        let reopened = try await chatWindow(offline, preferences: prefs)
+        try await waitFor("\(saved)?.querySelectorAll('[data-desktop-chat]').length === 2 && \(control("One"))?.getAttribute('aria-current') === 'page' && \(body)?.textContent.includes('Reply One')", in: reopened)
+        _ = try await reopened.evaluateJavaScript(control("Import from Codex") + ".click()")
+        try await waitFor("\(sources)?.querySelector('[role=status]')?.textContent.includes('Codex CLI is missing') && !!\(control("Two"))", in: reopened)
+        _ = try await reopened.evaluateJavaScript(control("Two") + ".click()")
+        try await waitFor("\(body)?.textContent.includes('Reply Two') && !!\(control("One"))", in: reopened)
+    }
+
     /// Opt in with a synthetic, explicitly prepared official thread. Never select the user's active chat.
     func testRealImportAndProviderContinuation() async throws {
         guard let root = ProcessInfo.processInfo.environment["KOLMOGOR_IMPORT_LIVE"] else { throw XCTSkip("Requires a disposable signed-in conversation.") }
@@ -188,9 +263,11 @@ final class CodexDesktopSidebarTests: XCTestCase {
                 let row = "document.querySelector('[data-desktop-chat=\"\(id)\"] button')"
                 try await waitFor("!!" + row, in: view)
                 _ = try await view.evaluateJavaScript(row + ".click()")
-                try await waitFor("!!document.querySelector('textarea') && !!document.querySelector('.desktop-reader')", in: view)
+                try await waitFor("!!document.querySelector('textarea') && !!document.querySelector('.desktop-reader') && !\(row).disabled", in: view)
                 XCTAssertEqual(source.library.count, 1)
                 XCTAssertNotEqual(source.library[0].id.lowercased(), id)
+                let close = "document.querySelector('[aria-label=\"Close Codex picker\"]')"
+                _ = try await view.evaluateJavaScript(close + ".click()")
             }
             try Data(source.library[0].id.utf8).write(to: folder.appendingPathComponent("local-id"))
         } else {
